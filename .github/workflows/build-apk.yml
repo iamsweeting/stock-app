@@ -1,1 +1,52 @@
+name: Build Flet Android APK
 
+on:
+  push:
+    branches: [ main ]  # 推送到main分支时触发
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest  # Flet打包Android推荐用Ubuntu
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"  # Flet推荐3.8+，3.10兼容性最佳
+
+      - name: 安装Flet
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet==0.24.1  # 建议锁定版本，和本地开发一致
+
+      - name: 安装Flutter（Flet依赖）
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.16.0"  # Flet兼容的Flutter版本（可根据Flet版本调整）
+          channel: "stable"
+
+      - name: 安装Android SDK（Ubuntu环境）
+        run: |
+          sudo apt update
+          sudo apt install -y openjdk-17-jdk android-sdk
+          # 配置Android SDK环境变量
+          echo "ANDROID_HOME=/usr/lib/android-sdk" >> $GITHUB_ENV
+          echo "PATH=$PATH:$ANDROID_HOME/tools:$ANDROID_HOME/platform-tools" >> $GITHUB_ENV
+
+      - name: 构建Flet Android APK
+        run: |
+          # 关键命令：Flet打包Android（debug版，适合测试）
+          flet build android --debug
+          # 若要打release版，需配置签名（见下文注意事项）
+          # flet build android --release --keystore-path=... --keystore-password=...
+
+      - name: 上传APK产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: flet-apk
+          path: build/android/app/outputs/apk/debug/app-debug.apk  # APK输出路径
