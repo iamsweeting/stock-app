@@ -1,0 +1,19 @@
+[project]
+name = "stock"
+version = "1.0.0"
+dependencies = [
+    "msgpack>=1.0.0",
+    "repath",
+    "websocket-client",
+    "oauthlib",
+    "packaging",
+    "requests"
+]
+
+[tool.flet]
+product = "Stock"
+company = "Your Company"
+copyright = "Copyright (C) 2026"
+
+[tool.flet.android.flutter]
+build_args = ["--dart-define=FLUTTER_IMPELLER_RENDERER=skia"]

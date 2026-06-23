@@ -1,0 +1,9 @@
+flet 0.85.3 (overridden)
+requests
+msgpack
+repath
+msgpack
+repath
+websocket-client
+oauthlib
+packaging
