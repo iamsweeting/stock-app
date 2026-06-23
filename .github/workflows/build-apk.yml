@@ -3,6 +3,7 @@ name: Build Flet Android APK
 on:
   push:
     branches: [ main ]  # 推送到main分支时触发
+  workflow_dispatch:
   pull_request:
     branches: [ main ]
 
