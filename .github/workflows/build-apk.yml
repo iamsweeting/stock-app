@@ -2,7 +2,7 @@ name: Build Flet Android APK
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # 手动打包按钮
+  workflow_dispatch: # 支持手动Run按钮
 
 jobs:
   build-android:
@@ -12,45 +12,48 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 配置Python3.11
+      # 统一配置JDK17
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 一键安装完整Android SDK+cmdline-tools，规避谷歌链接404
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools: latest
+          platform-versions: 34
+          build-tools-versions: 34.0.0
+          accept-licenses: true
+
+      # 配置Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: 安装项目依赖
+      # 安装项目依赖
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flet==0.24.1
-          # 如果你有其他依赖写在这里，比如pip install requests
+          pip install flet==0.24.1 requests
 
-      # 升级Flutter到3.19.0（匹配flet0.24.1最低要求）
-      - name: 安装兼容版本Flutter
+      # Flutter锁定3.19.0，满足Flet0.24.1最低要求
+      - name: Setup Flutter 3.19.0
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.19.0"
           channel: stable
+          cache: true
 
-      - name: 安装JDK17 + 完整Android SDK命令行工具
-        run: |
-          sudo apt update
-          sudo apt install -y openjdk-17-jdk wget unzip
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
-          # 手动安装完整Android cmdline-tools，解决缺失报错
-          mkdir -p ~/android-sdk/cmdline-tools
-          wget https://dl.google.com/android/repository/cmdline-tools-linux-11076708_latest.zip
-          unzip cmdline-tools-linux-11076708_latest.zip -d ~/android-sdk/cmdline-tools
-          mv ~/android-sdk/cmdline-tools/cmdline-tools ~/android-sdk/cmdline-tools/latest
-          export ANDROID_HOME=$HOME/android-sdk
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools" >> $GITHUB_ENV
-          # 接受协议并安装基础编译组件
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: 构建APK
+      # 构建APK（正确命令，无--debug参数）
+      - name: Build APK
         run: flet build apk
 
-      - name: 上传APK文件
+      # 上传APK产物
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: flet-app-apk
