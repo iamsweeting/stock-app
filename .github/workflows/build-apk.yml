@@ -1,7 +1,7 @@
 name: Build Flet Android APK
 on:
-  #push:
-  #  branches: [ main ]
+  # push:
+  #   branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -31,13 +31,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 只安装第三方依赖requests，删除flet安装！flet build会自动内置
-      - name: 安装项目第三方依赖
+      # 同时安装flet（提供命令行）+ 项目依赖requests，不锁死版本避免overridden冲突
+      - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install flet requests
 
-      # Flutter 3.22.0 适配Dart3.4，解决之前版本冲突
+      # Flutter 3.22.0 适配Dart3.4
       - name: 安装 Flutter 3.22.0
         uses: subosito/flutter-action@v2
         with:
@@ -45,12 +45,12 @@ jobs:
           channel: stable
           cache: true
 
-      # 清理旧缓存，避免残留版本干扰
+      # 清理旧缓存
       - name: 清理旧打包缓存
         run: |
           rm -rf build .flet flutter
 
-      # 标准打包命令，无多余参数
+      # 编译APK
       - name: 编译APK
         run: flet build apk
 
