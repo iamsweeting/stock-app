@@ -42,7 +42,7 @@ jobs:
       - name: 构建Flet Android APK
         run: |
           # 关键命令：Flet打包Android（debug版，适合测试）
-          flet build android --debug
+          flet build apk --debug
           # 若要打release版，需配置签名（见下文注意事项）
           # flet build android --release --keystore-path=... --keystore-password=...
 
