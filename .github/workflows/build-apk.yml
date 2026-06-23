@@ -1,7 +1,7 @@
 name: Build Flet Android APK
 on:
   # push:
-  #   branches: [ main ]
+    # branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -12,13 +12,15 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 配置JDK17
+      # 配置JDK17
+      - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 安装Android SDK
+      # 安装完整Android SDK，解决编译依赖
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools: latest
@@ -26,35 +28,31 @@ jobs:
           build-tools-versions: "34.0.0"
           accept-licenses: true
 
+      # Python环境
       - name: Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 同时安装flet（提供命令行）+ 项目依赖requests，不锁死版本避免overridden冲突
-      - name: 安装依赖
+      # 安装最新flet-cli（0.85.3）+你的业务依赖
+      - name: 安装Python依赖
         run: |
           python -m pip install --upgrade pip
           pip install flet requests
 
-      # Flutter 3.22.0 适配Dart3.4
-      - name: 安装 Flutter 3.22.0
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.22.0"
-          channel: stable
-          cache: true
+      # 清理旧缓存，避免残留Flutter冲突
+      - name: 清理缓存
+        run: rm -rf build .flet flutter ~/.flutter
 
-      # 清理旧缓存
-      - name: 清理旧打包缓存
+      # 非交互模式打包，自动确认所有弹窗，禁止交互式输入
+      - name: 编译APK（无交互）
         run: |
-          rm -rf build .flet flutter
+          export PYTHONUNBUFFERED=1
+          # 自动同意所有询问，跳过[y/n]交互弹窗
+          echo y | flet build apk
 
-      # 编译APK
-      - name: 编译APK
-        run: flet build apk
-
-      - name: 上传APK包
+      # 上传生成的APK
+      - name: 上传APK安装包
         uses: actions/upload-artifact@v4
         with:
           name: stock-app-apk
