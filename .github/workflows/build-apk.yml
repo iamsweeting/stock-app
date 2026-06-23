@@ -1,7 +1,7 @@
 name: Build Flet Android APK
 on:
   # push:
-    # branches: [ main ]
+  #   branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -12,46 +12,41 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      # 配置JDK17
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 安装完整Android SDK，解决编译依赖
+      # 修正Android SDK Action合法参数
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools: latest
-          platform-versions: 34
-          build-tools-versions: "34.0.0"
-          accept-licenses: true
+          cmdline-tools-version: latest
+          accept-android-sdk-licenses: true
+          packages: >
+            platforms;android-34
+            build-tools;34.0.0
+            platform-tools
 
-      # Python环境
       - name: Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 安装最新flet-cli（0.85.3）+你的业务依赖
       - name: 安装Python依赖
         run: |
           python -m pip install --upgrade pip
           pip install flet requests
 
-      # 清理旧缓存，避免残留Flutter冲突
-      - name: 清理缓存
-        run: rm -rf build .flet flutter ~/.flutter
+      - name: 清理旧缓存
+        run: rm -rf build .flet flutter
 
-      # 非交互模式打包，自动确认所有弹窗，禁止交互式输入
-      - name: 编译APK（无交互）
-        run: |
-          export PYTHONUNBUFFERED=1
-          # 自动同意所有询问，跳过[y/n]交互弹窗
-          echo y | flet build apk
+      # 自动输入y跳过交互确认
+      - name: 编译APK
+        run: echo y | flet build apk
 
-      # 上传生成的APK
+      # 上传整个apk文件夹，避免单文件找不到
       - name: 上传APK安装包
         uses: actions/upload-artifact@v4
         with:
