@@ -1,7 +1,5 @@
 name: Build Flet Android APK
 on:
-  # push:
-  #   branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -32,16 +30,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: 安装打包用CLI依赖
         run: |
           python -m pip install --upgrade pip
-          pip install flet requests
+          pip install -r requirements.txt
+          pip install --upgrade flet
 
-      - name: 清理旧缓存
-        run: rm -rf build .flet flutter
-
-      # flet 0.85+ 自动读取项目根目录 requirements.txt 嵌入APK，无需传参
+      # 移除了 rm -rf 删除缓存命令，保留全部构建缓存加速编译
       - name: 编译APK
         run: echo y | flet build apk
 
