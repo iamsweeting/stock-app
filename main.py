@@ -1,7 +1,3 @@
-# v0.1 
-# - 新增枢轴点汇总表格
-# - 适配低版本 Flet 兼容
-# - 待验证手机端显示效果
 import flet as ft
 from datetime import datetime, timedelta
 import threading
@@ -253,7 +249,6 @@ def calc_date_range(end_date, mode):
     return start_date, end_date
 
 # 6. 事件
-# 仅保留计算按钮：联网拉取行情重算
 def refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source):
     code = auto_code.value.strip()
     if not code:
@@ -332,12 +327,12 @@ def refresh_hs300_pe(e, page, hs300_pe_text):
         page.update()
     threading.Thread(target=task, daemon=True).start()
 
-# 7. 主界面【移除右侧刷新按钮，无任何 ft.Tabs】
+# 7. 主界面（修复Tab贴顶无法点击，移除刷新按钮，无ft.Tabs）
 def main(page: ft.Page):
     page.title = "股票枢轴点计算器"
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.padding = 0
+    page.padding = ft.Padding(left=10, top=20, right=10, bottom=10) # 全局顶部预留20px，Tab不会贴顶
     page.window_width = 420
     page.window_height = 880
     date_store = [datetime.now().date() - timedelta(days=1)]
@@ -389,7 +384,6 @@ def main(page: ft.Page):
         bottom=ft.BorderSide(1, ft.Colors.BLACK)
     )
 
-    # 已删除右侧刷新图标按钮，仅保留计算按钮
     page1 = ft.Column([
         ft.Card(
             bgcolor=ft.Colors.WHITE,
@@ -407,7 +401,6 @@ def main(page: ft.Page):
                 ),
                 ft.Row([auto_name, auto_date_range], alignment="spaceBetween"),
                 ft.Row([auto_high, auto_low, auto_close], spacing=10),
-                # 仅单个计算按钮，无刷新按钮
                 ft.Row([calc_btn_auto], alignment=ft.MainAxisAlignment.START),
             ], spacing=12), padding=15),
         ),
@@ -469,7 +462,7 @@ def main(page: ft.Page):
         )
     ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    # 纯按钮切换页面，无任何 ft.Tabs
+    # 页面切换逻辑（顶部按钮增加内边距，远离屏幕顶端，可正常点击）
     page_list = [page1, page2, page3]
     content_view = ft.Container(expand=True)
 
@@ -481,19 +474,26 @@ def main(page: ft.Page):
     tab_btn1 = ft.TextButton("自动处理", on_click=lambda e: switch_page(0))
     tab_btn2 = ft.TextButton("手动计算", on_click=lambda e: switch_page(1))
     tab_btn3 = ft.TextButton("设置", on_click=lambda e: switch_page(2))
-    top_btn_row = ft.Row([tab_btn1, tab_btn2, tab_btn3], alignment=ft.MainAxisAlignment.CENTER)
-
-    page.add(
-        ft.Column([top_btn_row, content_view], expand=True)
+    # 给Tab按钮行增加上下内边距，彻底解决贴顶触摸不到
+    top_btn_row = ft.Container(
+        ft.Row([tab_btn1, tab_btn2, tab_btn3], alignment=ft.MainAxisAlignment.CENTER),
+        padding=ft.Padding(top=5, bottom=10, left=0, right=0)
     )
 
-    # 后台加载PE
+    page.add(
+        ft.Column(
+            [top_btn_row, content_view],
+            expand=True
+        )
+    )
+
+    # 初始化加载PE
     def init_pe_load():
         val = get_hs300_pe_median()
         hs300_pe_text.value = f"沪深300PE中值：{val}" if val else "沪深300PE中值：获取失败"
         page.update()
     threading.Thread(target=init_pe_load, daemon=True).start()
 
-# 兼容低版本flet，直接传入main函数，无target关键字
+# 兼容低版本flet
 if __name__ == "__main__":
     ft.run(main)
