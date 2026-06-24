@@ -4,7 +4,7 @@ version = "1.0.0"
 requires-python = ">=3.10"
 dependencies = [
     "flet",
-    "requests"，
+    "requests",
     "msgpack>=1.0.0",
     "repath",
     "websocket-client",
@@ -13,13 +13,21 @@ dependencies = [
 ]
 
 [tool.flet.dependencies]
-# 强制打包工具把这些Python库嵌入APK安卓运行环境
-packages = ["flet", "requests"]
+# 全部需要打包进安卓APK的Python库完整列表
+packages = [
+    "flet",
+    "requests",
+    "msgpack>=1.0.0",
+    "repath",
+    "websocket-client",
+    "oauthlib",
+    "packaging"
+]
 
 [tool.flet.android.meta_data]
 # 关闭Vulkan Impeller，解决白屏
 "io.flutter.embedding.android.Renderer" = "skia"
 
 [tool.flet.app]
-# 主程序在项目根目录，不用src文件夹
+# 主程序在项目根目录
 path = "."
