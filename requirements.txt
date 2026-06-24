@@ -2,8 +2,6 @@ flet
 requests
 msgpack
 repath
-msgpack
-repath
 websocket-client
 oauthlib
 packaging
