@@ -5,7 +5,7 @@ requires-python = ">=3.10"
 dependencies = [
     "flet",
     "requests",
-    "msgpack>=1.0.0",
+    "msgpack",
     "repath",
     "websocket-client",
     "oauthlib",
