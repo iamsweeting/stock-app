@@ -41,9 +41,9 @@ jobs:
       - name: 清理旧缓存
         run: rm -rf build .flet flutter
 
-      # 指定requirements.txt嵌入依赖到APK
+      # flet 0.85+ 自动读取项目根目录 requirements.txt 嵌入APK，无需传参
       - name: 编译APK
-        run: echo y | flet build apk --deps requirements.txt
+        run: echo y | flet build apk
 
       - name: 上传APK安装包
         uses: actions/upload-artifact@v4
