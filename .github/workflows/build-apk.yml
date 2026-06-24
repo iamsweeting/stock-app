@@ -7,7 +7,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      # 强制所有JS Action使用Node24，消除Node20弃用警告
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: 检出代码
@@ -20,7 +19,7 @@ jobs:
           java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: latest
           accept-android-sdk-licenses: true
