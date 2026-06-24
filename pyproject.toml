@@ -1,19 +1,25 @@
 [project]
-name = "stock"
+name = "stock-app"
 version = "1.0.0"
+requires-python = ">=3.10"
 dependencies = [
+    "flet",
+    "requests"，
     "msgpack>=1.0.0",
     "repath",
     "websocket-client",
     "oauthlib",
-    "packaging",
-    "requests"
+    "packaging"
 ]
 
-[tool.flet]
-product = "Stock"
-company = "Your Company"
-copyright = "Copyright (C) 2026"
+[tool.flet.dependencies]
+# 强制打包工具把这些Python库嵌入APK安卓运行环境
+packages = ["flet", "requests"]
 
-[tool.flet.android.flutter]
-build_args = ["--dart-define=FLUTTER_IMPELLER_RENDERER=skia"]
+[tool.flet.android.meta_data]
+# 关闭Vulkan Impeller，解决白屏
+"io.flutter.embedding.android.Renderer" = "skia"
+
+[tool.flet.app]
+# 主程序在项目根目录，不用src文件夹
+path = "."
