@@ -2,7 +2,7 @@ import flet as ft
 from datetime import datetime, timedelta
 import threading
 import re
-# 静态显式导入requests全套，避免打包裁剪，无需修改yaml
+# 静态显式导入requests全套依赖，防止打包裁剪，不用改yml
 import requests
 from requests import get, Session
 from requests.exceptions import RequestException, ConnectionError, Timeout
@@ -11,7 +11,7 @@ import certifi
 import charset_normalizer
 import idna
 
-# 1. 行情函数升级：支持【指定历史日期】股票/ETF数据获取
+# 行情函数：四个数据源全部完整联网查询，默认腾讯
 def get_stock_data(stock_code, target_date, source="腾讯财经"):
     try:
         headers = {
@@ -20,7 +20,7 @@ def get_stock_data(stock_code, target_date, source="腾讯财经"):
         }
         date_str = target_date.strftime('%Y%m%d')
         date_show = target_date.strftime('%Y-%m-%d')
-        # 区分沪市/深市（5/6沪，0/1深，兼容ETF）
+        # 区分沪市/深市，兼容ETF 5/6沪，0/1深
         if stock_code.startswith(("5", "6")):
             prefix = "sh"
             market_flag = "1"
@@ -30,7 +30,7 @@ def get_stock_data(stock_code, target_date, source="腾讯财经"):
         else:
             return None
 
-        # 东方财富日线历史接口（稳定支持任意历史日期，主力数据源）
+        # 东方财富日线
         if source == "东方财富":
             url = f"https://push2.eastmoney.com/api/qt/stock/kline/get?secid={market_flag}.{stock_code}&kltype=1&beg={date_str}&end={date_str}&fqt=0"
             resp = get(url, headers=headers, timeout=12)
@@ -45,7 +45,7 @@ def get_stock_data(stock_code, target_date, source="腾讯财经"):
             close = float(line[2])
             return (stock_name, high, low, close, date_show, date_show)
 
-        # 雪球日线接口
+        # 雪球日线
         elif source == "雪球":
             symbol = f"{prefix}{stock_code}"
             end_ts = int(datetime.combine(target_date, datetime.max.time()).timestamp() * 1000)
@@ -64,7 +64,7 @@ def get_stock_data(stock_code, target_date, source="腾讯财经"):
             close = float(item["close"])
             return (stock_name, high, low, close, date_show, date_show)
 
-        # 腾讯财经日线接口
+        # 腾讯财经日线（默认）
         elif source == "腾讯财经":
             url = f"https://qt.gtimg.cn/q={prefix}{stock_code}"
             resp = get(url, headers=headers, timeout=10)
@@ -73,7 +73,6 @@ def get_stock_data(stock_code, target_date, source="腾讯财经"):
                 return None
             parts = text.split('~')
             stock_name = parts[1]
-            # 补充历史日线请求
             hist_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={prefix}{stock_code},day,,{date_str},{date_str},256,qfq"
             resp_hist = get(hist_url, headers=headers, timeout=10)
             hist_data = resp_hist.json()
@@ -110,7 +109,7 @@ def get_stock_data(stock_code, target_date, source="腾讯财经"):
     except Exception:
         return None
 
-# 2.沪深300PE抓取
+# 沪深300PE接口，仅设置页手动点刷新才请求
 def get_hs300_pe_median():
     try:
         url = "https://legulegu.com/stockdata/hs300-ttm-lyr"
@@ -141,7 +140,7 @@ def get_hs300_pe_median():
     except Exception:
         return None
 
-# 3. 枢轴计算
+# 全套枢轴点位计算
 def calculate_pivot_points(high, low, close):
     results = []
     pp = (high + low + close) / 3
@@ -231,7 +230,7 @@ def parse_results(results):
         blocks.append(current)
     return blocks
 
-# 4. 表格渲染
+# 生成表格卡片
 def build_all_in_one_table_card(blocks):
     r_color = ft.Colors.RED_400
     s_color = ft.Colors.GREEN_400
@@ -267,7 +266,7 @@ def build_all_in_one_table_card(blocks):
     table_col = ft.Column(rows, spacing=0)
     return ft.Card(bgcolor=ft.Colors.WHITE, content=ft.Container(table_col, padding=10), elevation=2)
 
-# 5. 工具函数
+# 日期范围工具
 def calc_date_range(end_date, mode):
     if mode == "按周计算":
         start_date = end_date - timedelta(days=6)
@@ -275,7 +274,7 @@ def calc_date_range(end_date, mode):
     else:
         return end_date, end_date
 
-# 6. 事件逻辑
+# 计算按钮事件（防重复点击，先清空表格）
 def refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source):
     code = auto_code.value.strip()
     if not code:
@@ -294,7 +293,7 @@ def refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_da
             data = get_stock_data(code, target_day, source=data_source.value)
             res = []
             if not data:
-                res = [ft.Text("❌ 该日期无行情（非交易日/数据源无数据），请更换日期或切换数据源", color=ft.Colors.RED)]
+                res = [ft.Text("❌ 该日期无行情（非交易日/接口无返回），更换日期或切换数据源", color=ft.Colors.RED)]
             else:
                 stock_name, high, low, close, _, _ = data
                 auto_name.value = f"名称：{stock_name}"
@@ -356,7 +355,7 @@ def refresh_hs300_pe(e, page, hs300_pe_text):
         page.update()
     threading.Thread(target=task, daemon=True).start()
 
-# 7. 主界面
+# 主界面入口
 def main(page: ft.Page):
     page.title = "股票枢轴点计算器"
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -366,23 +365,24 @@ def main(page: ft.Page):
     page.window_height = 880
     date_store = [datetime.now().date() - timedelta(days=1)]
 
+    # 下拉默认腾讯财经，四个数据源全部保留
     data_source_dropdown = ft.Dropdown(
         label="行情数据源",
         options=[
-            ft.dropdown.Option("腾讯财经"),
-            ft.dropdown.Option("雪球"),
-            ft.dropdown.Option("东方财富"),
-            ft.dropdown.Option("网易财经"),
+            ft.DropdownOption("腾讯财经"),
+            ft.DropdownOption("雪球"),
+            ft.DropdownOption("东方财富"),
+            ft.DropdownOption("网易财经"),
         ],
-        value="东方财富",
+        value="腾讯财经",
         expand=1
     )
 
-    # 页面1 自动处理
+    # 自动查询页面
     auto_code = ft.TextField(label="股票代码", hint_text="如 000062 / 588170", expand=1, value="000062")
     auto_mode = ft.Dropdown(
         label="计算模式",
-        options=[ft.dropdown.Option("按日计算"), ft.dropdown.Option("按周计算")],
+        options=[ft.DropdownOption("按日计算"), ft.DropdownOption("按周计算")],
         value="按日计算",
         expand=1
     )
@@ -390,6 +390,7 @@ def main(page: ft.Page):
     auto_name = ft.Text("名称：等待获取...", size=14, color=ft.Colors.GREY_700, selectable=True)
     init_sd, init_ed = calc_date_range(date_store[0], auto_mode.value)
     auto_date_range = ft.Text(f"{init_sd.strftime('%Y-%m-%d')} ~ {init_ed.strftime('%Y-%m-%d')}", size=14, color=ft.Colors.GREY_700, selectable=True)
+    # 只读输入框仅保留read_only，无selectable兼容旧Flet
     auto_high = ft.TextField(label="最高", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
     auto_low = ft.TextField(label="最低", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
     auto_close = ft.TextField(label="收盘", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
@@ -436,7 +437,7 @@ def main(page: ft.Page):
         auto_results
     ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    # 页面2 手动计算
+    # 手动计算页面
     man_high = ft.TextField(label="最高价", keyboard_type=ft.KeyboardType.NUMBER, expand=1, value="100")
     man_low = ft.TextField(label="最低价", keyboard_type=ft.KeyboardType.NUMBER, expand=1, value="90")
     man_close = ft.TextField(label="收盘价", keyboard_type=ft.KeyboardType.NUMBER, expand=1, value="95")
@@ -453,16 +454,16 @@ def main(page: ft.Page):
         man_results
     ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    # 页面3 大盘设置+免责
+    # 设置页面：PE仅手动刷新，无启动自动加载
     hs300_pe_text = ft.Text("沪深300PE中值：点击右侧刷新按钮查询", size=14, color=ft.Colors.BLUE_700, selectable=True)
     hs300_refresh_btn = ft.IconButton(icon=ft.Icons.REFRESH, icon_size=18, on_click=lambda e: refresh_hs300_pe(e, page, hs300_pe_text))
     disclaimer_text = ft.Text(
         """免责声明：
-1. 本工具仅提供技术指标计算展示，不构成任何投资建议、操作指导。
-2. 行情数据来源于第三方公开接口，数据延迟、缺失、错误均有可能，仅供参考。
-3. 沪深300市盈率数据抓取自乐咕乐股网站，不保证实时准确。
-4. 股市存在高风险，所有交易盈亏由投资者本人自行承担。
-5. 本程序免费开源，无任何收费荐股、理财服务。""",
+1. 本工具仅提供技术指标计算展示，不构成任何投资建议。
+2. 行情数据来自第三方公开接口，延迟/缺失属正常情况。
+3. 沪深300市盈率数据抓取自乐咕乐股网站。
+4. 股市风险较高，盈亏自行承担。
+5. 软件免费开源，无付费功能。""",
         size=12,
         color=ft.Colors.GREY_800,
         selectable=True
@@ -480,7 +481,7 @@ def main(page: ft.Page):
             content=ft.Container(ft.Column([
                 ft.Text("行情数据源设置", size=16, weight=ft.FontWeight.BOLD),
                 data_source_dropdown,
-                ft.Text("切换后下次查询自动生效，东方财富历史数据最稳定", size=12, color=ft.Colors.GREY_600)
+                ft.Text("四个数据源均可联网查询，默认腾讯财经", size=12, color=ft.Colors.GREY_600)
             ], spacing=10), padding=15)
         ),
         ft.Card(
@@ -492,7 +493,7 @@ def main(page: ft.Page):
         )
     ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    # 页面切换 紧凑间距
+    # Tab切换布局，紧凑间距
     page_list = [page1, page2, page3]
     content_view = ft.Container(expand=True)
 
@@ -516,8 +517,8 @@ def main(page: ft.Page):
             spacing=8
         )
     )
-    # 完全删除启动自动加载PE的线程，打开APP无任何网络请求
+    # 彻底删除APP启动自动加载PE的线程，打开零网络请求
 
 if __name__ == "__main__":
-    # 内置安卓网络权限，无需修改yml
+    # 内置安卓网络权限，无需修改yml打包文件
     ft.app(target=main, android_permissions=["INTERNET"])
