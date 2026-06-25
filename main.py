@@ -5,81 +5,99 @@ import re
 import requests
 from requests.exceptions import RequestException
 
-# 1. 股票数据源（腾讯、雪球、东财、网易）
-def get_stock_data(stock_code, date_obj, time_range, source="腾讯财经"):
+# 1. 行情函数升级：支持【指定历史日期】股票/ETF数据获取
+def get_stock_data(stock_code, target_date, source="腾讯财经"):
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Connection': 'close'
         }
-        date_str = date_obj.strftime('%Y-%m-%d')
+        date_str = target_date.strftime('%Y%m%d')
+        date_show = target_date.strftime('%Y-%m-%d')
+        # 区分沪市/深市（5/6沪，0/1深，兼容ETF）
+        if stock_code.startswith(("5", "6")):
+            prefix = "sh"
+            market_flag = "1"
+        elif stock_code.startswith(("0", "1")):
+            prefix = "sz"
+            market_flag = "0"
+        else:
+            return None
 
-        if source == "雪球":
-            symbol = f"SH{stock_code}" if stock_code.startswith('6') else f"SZ{stock_code}"
-            url = f"https://stock.xueqiu.com/v5/stock/realtime/quotec.json?symbol={symbol}"
+        # 东方财富日线历史接口（稳定支持任意历史日期，主力数据源）
+        if source == "东方财富":
+            url = f"https://push2.eastmoney.com/api/qt/stock/kline/get?secid={market_flag}.{stock_code}&kltype=1&beg={date_str}&end={date_str}&fqt=0"
+            resp = requests.get(url, headers=headers, timeout=12)
+            data = resp.json()
+            klines = data.get("data", {}).get("klines", [])
+            if not klines:
+                return None
+            line = klines[0].split(",")
+            stock_name = data["data"]["name"]
+            high = float(line[3])
+            low = float(line[4])
+            close = float(line[2])
+            return (stock_name, high, low, close, date_show, date_show)
+
+        # 雪球日线接口
+        elif source == "雪球":
+            symbol = f"{prefix}{stock_code}"
+            end_ts = int(datetime.combine(target_date, datetime.max.time()).timestamp() * 1000)
+            start_ts = int(datetime.combine(target_date, datetime.min.time()).timestamp() * 1000)
+            url = f"https://stock.xueqiu.com/v5/stock/history/kline?symbol={symbol}&begin={start_ts}&end={end_ts}&period=day"
             headers['Referer'] = 'https://xueqiu.com/'
             resp = requests.get(url, headers=headers, timeout=10)
             data = resp.json()
-            if not data.get("data") or len(data["data"]) == 0:
+            items = data.get("data", {}).get("items", [])
+            if not items:
                 return None
-            item = data["data"][0]
-            name = item.get("name", "")
-            high = float(item.get("high", 0))
-            low = float(item.get("low", 0))
-            close = float(item.get("current", 0))
-            if high <= 0 or low <= 0 or close <= 0:
-                return None
-            return (name, high, low, close, date_str, date_str)
+            item = items[0]
+            stock_name = data["data"]["stock_name"]
+            high = float(item["high"])
+            low = float(item["low"])
+            close = float(item["close"])
+            return (stock_name, high, low, close, date_show, date_show)
 
-        elif source == "东方财富":
-            market = "1" if stock_code.startswith('6') else "0"
-            url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={market}.{stock_code}&fields=f43,f44,f45,f58"
-            resp = requests.get(url, headers=headers, timeout=10)
-            data = resp.json()
-            if not data or "data" not in data or not data["data"]:
-                return None
-            item = data["data"]
-            name = item.get("f58", "")
-            high = float(item.get("f44", 0))
-            low = float(item.get("f45", 0))
-            close = float(item.get("f43", 0))
-            if high <= 0 or low <= 0 or close <= 0:
-                return None
-            return (name, high, low, close, date_str, date_str)
-
-        elif source == "网易财经":
-            code = f"0{stock_code}" if stock_code.startswith('6') else f"1{stock_code}"
-            url = f"https://api.money.163.com/data/quotation/{code}.html"
-            resp = requests.get(url, headers=headers, timeout=10)
-            resp.encoding = 'utf-8'
-            text = resp.text
-            match_name = re.search(r'"name":"([^"]+)"', text)
-            match_high = re.search(r'"high":"([\d.]+)"', text)
-            match_low = re.search(r'"low":"([\d.]+)"', text)
-            match_close = re.search(r'"price":"([\d.]+)"', text)
-            if not all([match_name, match_high, match_low, match_close]):
-                return None
-            name = match_name.group(1)
-            high = float(match_high.group(1))
-            low = float(match_low.group(1))
-            close = float(match_close.group(1))
-            if high <= 0 or low <= 0 or close <= 0:
-                return None
-            return (name, high, low, close, date_str, date_str)
-
-        else:
-            prefix = 'sh' if stock_code.startswith('6') else 'sz'
+        # 腾讯财经日线接口
+        elif source == "腾讯财经":
             url = f"https://qt.gtimg.cn/q={prefix}{stock_code}"
             resp = requests.get(url, headers=headers, timeout=10)
             text = resp.text
             if '~' not in text:
                 return None
             parts = text.split('~')
-            name = parts[1]
-            high = float(parts[33])
-            low = float(parts[34])
-            close = float(parts[3])
-            return (name, high, low, close, date_str, date_str)
+            stock_name = parts[1]
+            # 补充历史日线请求
+            hist_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={prefix}{stock_code},day,,{date_str},{date_str},256,qfq"
+            resp_hist = requests.get(hist_url, headers=headers, timeout=10)
+            hist_data = resp_hist.json()
+            klist = hist_data.get(f"{prefix}{stock_code}", {}).get("day", [])
+            if not klist:
+                return None
+            k = klist[0]
+            high = float(k[3])
+            low = float(k[4])
+            close = float(k[2])
+            return (stock_name, high, low, close, date_show, date_show)
+
+        # 网易财经日线
+        elif source == "网易财经":
+            net_code = f"0{stock_code}" if prefix == "sz" else f"1{stock_code}"
+            url = f"https://api.money.163.com/data/chart/{net_code}/day?start={date_str}&end={date_str}"
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.encoding = "utf-8"
+            text = resp.text
+            match_high = re.search(r'"high":([\d.]+)', text)
+            match_low = re.search(r'"low":([\d.]+)', text)
+            match_close = re.search(r'"close":([\d.]+)', text)
+            match_name = re.search(r'"name":"([^"]+)"', text)
+            if not all([match_name, match_high, match_low, match_close]):
+                return None
+            stock_name = match_name.group(1)
+            high = float(match_high.group(1))
+            low = float(match_low.group(1))
+            close = float(match_close.group(1))
+            return (stock_name, high, low, close, date_show, date_show)
 
     except RequestException:
         return None
@@ -245,10 +263,13 @@ def build_all_in_one_table_card(blocks):
 
 # 5. 工具函数
 def calc_date_range(end_date, mode):
-    start_date = end_date - timedelta(days=6) if mode == "按周计算" else end_date
-    return start_date, end_date
+    if mode == "按周计算":
+        start_date = end_date - timedelta(days=6)
+        return start_date, end_date
+    else:
+        return end_date, end_date
 
-# 6. 事件
+# 6. 事件逻辑（重构：读取用户选择的截止日作为目标历史日期）
 def refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source):
     code = auto_code.value.strip()
     if not code:
@@ -257,15 +278,18 @@ def refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_da
         page.update()
         return
     calc_btn_auto.disabled = True
-    auto_results.controls = []
+    auto_results.controls.clear()
     page.update()
+
     def task():
         try:
-            ed = date_store[0]
-            sd, ed = calc_date_range(ed, auto_mode.value)
-            data = get_stock_data(code, ed, auto_mode.value, source=data_source.value)
+            target_day = date_store[0]
+            sd, ed = calc_date_range(target_day, auto_mode.value)
+            # 调用新函数：传入指定日期target_day，获取历史行情
+            data = get_stock_data(code, target_day, source=data_source.value)
+            res = []
             if not data:
-                res = [ft.Text("❌ 获取失败，请切换数据源", color=ft.Colors.RED)]
+                res = [ft.Text("❌ 该日期无行情（非交易日/数据源无数据），请更换日期或切换数据源", color=ft.Colors.RED)]
             else:
                 stock_name, high, low, close, _, _ = data
                 auto_name.value = f"名称：{stock_name}"
@@ -327,14 +351,15 @@ def refresh_hs300_pe(e, page, hs300_pe_text):
         page.update()
     threading.Thread(target=task, daemon=True).start()
 
-# 7. 主界面（修复Tab贴顶无法点击，移除刷新按钮，无ft.Tabs）
+# 7. 主界面（兼容旧版Flet，无TextField selectable，紧凑UI）
 def main(page: ft.Page):
     page.title = "股票枢轴点计算器"
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.padding = ft.Padding(left=10, top=20, right=10, bottom=10) # 全局顶部预留20px，Tab不会贴顶
+    page.padding = ft.Padding(left=10, top=15, right=10, bottom=10)
     page.window_width = 420
     page.window_height = 880
+    # 默认日期：前一个交易日
     date_store = [datetime.now().date() - timedelta(days=1)]
 
     data_source_dropdown = ft.Dropdown(
@@ -345,22 +370,23 @@ def main(page: ft.Page):
             ft.dropdown.Option("东方财富"),
             ft.dropdown.Option("网易财经"),
         ],
-        value="腾讯财经",
+        value="东方财富", # 优先东方财富，历史日线最稳定
         expand=1
     )
 
-    # 页面1 自动处理 默认代码000062
-    auto_code = ft.TextField(label="股票代码", hint_text="如 000062", expand=1, value="000062")
+    # 页面1 自动处理
+    auto_code = ft.TextField(label="股票代码", hint_text="如 000062 / 588170", expand=1, value="000062")
     auto_mode = ft.Dropdown(
         label="计算模式",
         options=[ft.dropdown.Option("按日计算"), ft.dropdown.Option("按周计算")],
         value="按日计算",
         expand=1
     )
-    auto_date_text = ft.Text(date_store[0].strftime('%Y-%m-%d'), size=14)
-    auto_name = ft.Text("名称：等待获取...", size=14, color=ft.Colors.GREY_700)
+    auto_date_text = ft.Text(date_store[0].strftime('%Y-%m-%d'), size=14, selectable=True)
+    auto_name = ft.Text("名称：等待获取...", size=14, color=ft.Colors.GREY_700, selectable=True)
     init_sd, init_ed = calc_date_range(date_store[0], auto_mode.value)
-    auto_date_range = ft.Text(f"{init_sd.strftime('%Y-%m-%d')} ~ {init_ed.strftime('%Y-%m-%d')}", size=14, color=ft.Colors.GREY_700)
+    auto_date_range = ft.Text(f"{init_sd.strftime('%Y-%m-%d')} ~ {init_ed.strftime('%Y-%m-%d')}", size=14, color=ft.Colors.GREY_700, selectable=True)
+    # 只读输入框 无selectable，兼容旧Flet
     auto_high = ft.TextField(label="最高", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
     auto_low = ft.TextField(label="最低", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
     auto_close = ft.TextField(label="收盘", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
@@ -425,7 +451,7 @@ def main(page: ft.Page):
     ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
     # 页面3 大盘设置+免责
-    hs300_pe_text = ft.Text("沪深300PE中值：获取中...", size=14, color=ft.Colors.BLUE_700)
+    hs300_pe_text = ft.Text("沪深300PE中值：获取中...", size=14, color=ft.Colors.BLUE_700, selectable=True)
     hs300_refresh_btn = ft.IconButton(icon=ft.Icons.REFRESH, icon_size=18, on_click=lambda e: refresh_hs300_pe(e, page, hs300_pe_text))
     disclaimer_text = ft.Text(
         """免责声明：
@@ -435,7 +461,8 @@ def main(page: ft.Page):
 4. 股市存在高风险，所有交易盈亏由投资者本人自行承担。
 5. 本程序免费开源，无任何收费荐股、理财服务。""",
         size=12,
-        color=ft.Colors.GREY_800
+        color=ft.Colors.GREY_800,
+        selectable=True
     )
     page3 = ft.Column([
         ft.Card(
@@ -450,7 +477,7 @@ def main(page: ft.Page):
             content=ft.Container(ft.Column([
                 ft.Text("行情数据源设置", size=16, weight=ft.FontWeight.BOLD),
                 data_source_dropdown,
-                ft.Text("切换后下次查询自动生效，雪球稳定性最优", size=12, color=ft.Colors.GREY_600)
+                ft.Text("切换后下次查询自动生效，东方财富历史数据最稳定", size=12, color=ft.Colors.GREY_600)
             ], spacing=10), padding=15)
         ),
         ft.Card(
@@ -462,7 +489,7 @@ def main(page: ft.Page):
         )
     ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    # 页面切换逻辑（顶部按钮增加内边距，远离屏幕顶端，可正常点击）
+    # 页面切换 紧凑间距
     page_list = [page1, page2, page3]
     content_view = ft.Container(expand=True)
 
@@ -474,26 +501,26 @@ def main(page: ft.Page):
     tab_btn1 = ft.TextButton("自动处理", on_click=lambda e: switch_page(0))
     tab_btn2 = ft.TextButton("手动计算", on_click=lambda e: switch_page(1))
     tab_btn3 = ft.TextButton("设置", on_click=lambda e: switch_page(2))
-    # 给Tab按钮行增加上下内边距，彻底解决贴顶触摸不到
     top_btn_row = ft.Container(
         ft.Row([tab_btn1, tab_btn2, tab_btn3], alignment=ft.MainAxisAlignment.CENTER),
-        padding=ft.Padding(top=5, bottom=10, left=0, right=0)
+        padding=ft.Padding(top=2, bottom=4, left=0, right=0)
     )
 
     page.add(
         ft.Column(
             [top_btn_row, content_view],
-            expand=True
+            expand=True,
+            spacing=8
         )
     )
 
-    # 初始化加载PE
+    # 初始化PE加载
     def init_pe_load():
         val = get_hs300_pe_median()
         hs300_pe_text.value = f"沪深300PE中值：{val}" if val else "沪深300PE中值：获取失败"
         page.update()
     threading.Thread(target=init_pe_load, daemon=True).start()
 
-# 兼容低版本flet
+# 兼容低版本Flet
 if __name__ == "__main__":
     ft.run(main)
