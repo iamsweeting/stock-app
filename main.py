@@ -1,14 +1,31 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V0.3.2
-# 开发环境：Python 3.10+ / Flet 0.80+
-# 打包支持：Windows本地运行 + Android APK打包
-# 依赖库：flet, yfinance, pandas, requests, baostock
+# 股票枢轴点计算器 StockPivotCalc V1.0
+# ==============================================================================
+# 【功能说明】
+#   输入股票代码，选择日期与数据源，自动计算五种枢轴点：
+#   1. 经典枢轴点 (Classic Pivot)
+#   2. 斐波那契枢轴点 (Fibonacci Pivot)
+#   3. 卡玛利亚枢轴点 (Camarilla Pivot)
+#   4. 伍迪枢轴点 (Woodie's Pivot)
+#   5. 迪马克枢轴点 (DeMark Pivot)
+#   支持按日/按周计算，支持A股/美股/港股行情。
+#
+# 【行情数据源】
+#   Bao (Baostock)  : A股历史日线，免费稳定，支持按日/按周
+#   腾讯 (Tencent)  : A股当日行情，非交易日显示最近收盘数据，仅支持按日
+#   雅虎 (Yahoo)    : 全球历史行情，非交易日显示最近收盘数据，支持按日/按周
+#
+# 【开发环境】Python 3.10+ / Flet 0.80+
+# 【打包支持】Windows本地运行 + Android APK打包
+# 【依赖库】flet, yfinance, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
-# V0.3.2 2026-07-12  布局紧凑化：表格防换行+横向滚动；字号/间距全面压缩；
-#                     按钮样式优化；股票名称自动缩小字号；单屏适配。
-# V0.3.1 2026-07-12  修复按周计算；数据源按钮中文简称；结果标注来源。
-# V0.3   2026-07-12  单页精简版；Baostock/腾讯/Yahoo三源；async安全更新。
+# V0.3.4 2026-07-12  修复移动端复制；底部添加数据源说明与免责声明；
+#                    修复按周计算切换数据源时的状态残留问题。
+# V0.3.3 2026-07-12  关于对话框美化；表格单元格可点击复制。
+# V0.3.2 2026-07-12  布局紧凑化。
+# V0.3.1 2026-07-12  修复按周计算。
+# V0.3   2026-07-12  单页精简版。
 # ==============================================================================
 import flet as ft
 from datetime import datetime, timedelta
@@ -79,7 +96,11 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
     else:
         return {"err": "code", "msg": "Baostock仅支持0/1/3/5/6开头A股代码"}
     target_str = target_date.strftime('%Y-%m-%d')
-    start = (target_date - timedelta(days=10)).strftime('%Y-%m-%d')
+    # 按周计算时需要更多历史数据
+    if weekly:
+        start = (target_date - timedelta(days=20)).strftime('%Y-%m-%d')
+    else:
+        start = (target_date - timedelta(days=10)).strftime('%Y-%m-%d')
     end = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
     try:
         rs = bs.query_history_k_data_plus(
@@ -333,7 +354,9 @@ def parse_results(results):
     return blocks
 
 
-def build_all_in_one_table_card(blocks):
+# ==================== 可点击复制的表格（移动端适配） ====================
+
+def build_all_in_one_table_card(blocks, page):
     r_color = ft.Colors.RED_400
     s_color = ft.Colors.GREEN_400
     pp_color = ft.Colors.BLUE_700
@@ -341,23 +364,46 @@ def build_all_in_one_table_card(blocks):
     algo_list = [("经典", "经典"), ("斐波", "斐波那契"), ("卡玛", "卡玛利亚"), ("伍迪", "伍迪"), ("迪马克", "迪马克")]
     block_map = {b["title"]: b for b in blocks}
 
-    # 关键：列宽足够容纳7位数字（如1204.98），字体10px防换行
+    def _copy_cell(text):
+        def handler(e):
+            # 移动端使用 SnackBar 提示，桌面端尝试 set_clipboard
+            try:
+                page.set_clipboard(str(text))
+            except Exception:
+                pass
+            page.snack_bar = ft.SnackBar(ft.Text(f"已复制：{text}", size=12))
+            page.snack_bar.open = True
+            page.update()
+        return handler
+
+    def make_cell(text, width, color=None, bold=False, size=10):
+        txt = ft.Text(
+            text, size=size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
+            color=color, no_wrap=True, selectable=True
+        )
+        return ft.Container(
+            content=txt,
+            width=width,
+            padding=2,
+            on_click=_copy_cell(text),
+            tooltip="长按选择复制",
+            bgcolor=ft.Colors.TRANSPARENT,
+        )
+
     def make_row(level_name, is_header=False):
         cells = []
         if is_header:
-            txt = ft.Text(" ", size=10, weight=ft.FontWeight.BOLD)
+            cells.append(make_cell(" ", 28, size=10, bold=True))
         else:
             c = r_color if level_name.startswith("R") else s_color if level_name.startswith("S") else pp_color
-            txt = ft.Text(level_name, size=10, weight=ft.FontWeight.BOLD, color=c)
-        cells.append(ft.Container(txt, width=28, padding=2))
+            cells.append(make_cell(level_name, 28, color=c, bold=True, size=10))
         for show_name, data_key in algo_list:
             if is_header:
-                txt = ft.Text(show_name, size=10, weight=ft.FontWeight.BOLD)
+                cells.append(make_cell(show_name, 56, size=10, bold=True))
             else:
                 data = block_map[data_key]
                 val = data["pp"] if level_name == "PP" else data["r"].get(level_name, "-") if level_name.startswith("R") else data["s"].get(level_name, "-")
-                txt = ft.Text(val, size=10)
-            cells.append(ft.Container(txt, width=56, padding=2))  # 56px足够7位数字
+                cells.append(make_cell(val, 56, size=10))
         return ft.Row(cells, spacing=0)
 
     header = make_row("", is_header=True)
@@ -368,7 +414,6 @@ def build_all_in_one_table_card(blocks):
         rows.append(ft.Divider(height=1, color=ft.Colors.GREY_200))
 
     table_col = ft.Column(rows, spacing=0)
-    # 外层用Container限定最小宽度确保滚动生效，内部Row可横向滚动
     return ft.Container(
         content=ft.Row([table_col], scroll=ft.ScrollMode.AUTO),
         padding=6,
@@ -384,7 +429,6 @@ def show_snack(page, message):
 
 
 def _set_name_size(auto_name, stock_name):
-    """根据名称长度自动调整字号"""
     ln = len(stock_name)
     if ln > 10:
         auto_name.size = 11
@@ -398,7 +442,7 @@ def _set_name_size(auto_name, stock_name):
 
 async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, auto_name, auto_date_text,
                                      auto_real_date, auto_high, auto_low, auto_close, auto_results,
-                                     calc_btn_auto, source_state, source_label):
+                                     calc_btn_auto, source_state, source_label, source_note_text):
     code = auto_code.value.strip()
     if not code:
         show_snack(page, "请输入股票代码")
@@ -425,6 +469,12 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             auto_close.value = ""
             auto_name.value = "名称：获取失败"
             source_label.value = ""
+            # 更新数据源提示
+            if weekly and source in ("腾讯", "雅虎"):
+                source_note_text.value = "提示：按周计算请使用Bao数据源"
+                source_note_text.color = ft.Colors.ORANGE_700
+            else:
+                source_note_text.value = ""
         else:
             stock_name, high, low, close, real_day, target_str = data
             auto_name.value = f"名称：{stock_name}"
@@ -433,6 +483,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             auto_low.value = f"{low:.3f}"
             auto_close.value = f"{close:.3f}"
             source_label.value = f"来源：{source}"
+            source_note_text.value = ""  # 清除提示
             if weekly:
                 start_str = start_day.strftime('%m-%d')
                 end_str = target_day.strftime('%m-%d')
@@ -448,12 +499,13 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
                 res = [ft.Text("❌ 行情数值异常", color=ft.Colors.RED, size=12)]
             else:
                 blocks = parse_results(calculate_pivot_points(high, low, close))
-                res = [build_all_in_one_table_card(blocks)]
+                res = [build_all_in_one_table_card(blocks, page)]
         auto_results.controls = res
     except Exception as e:
         auto_results.controls = [ft.Text(f"错误: {e}", color=ft.Colors.RED, size=12)]
         auto_real_date.value = "获取失败"
         source_label.value = ""
+        source_note_text.value = ""
     finally:
         calc_btn_auto.disabled = False
         page.update()
@@ -484,7 +536,7 @@ def _update_source_btns(bs_btn, tx_btn, yh_btn, source_state, new_source, page):
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "股票枢轴点 V0.3.2"
+    page.title = "股票枢轴点 V0.3.4"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
@@ -494,7 +546,6 @@ def main(page: ft.Page):
     date_store = [datetime.now().date()]
     source_state = ["Bao"]
 
-    # ===== 数据源切换按钮（紧凑）=====
     bs_btn = ft.Button(
         "Bao", expand=1, height=34,
         style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
@@ -508,7 +559,6 @@ def main(page: ft.Page):
         style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
 
-    # ===== 输入控件（紧凑）=====
     auto_code = ft.TextField(
         label="股票代码", hint_text="如600519",
         expand=1, value="600519", text_size=13,
@@ -546,6 +596,7 @@ def main(page: ft.Page):
         expand=1, read_only=True, text_size=13, content_padding=8
     )
     source_label = ft.Text("", size=10, color=ft.Colors.GREY_600, italic=True, selectable=True)
+    source_note_text = ft.Text("", size=11, color=ft.Colors.GREY_600)  # 数据源提示
     auto_results = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=6, expand=True)
 
     date_picker = ft.DatePicker(
@@ -570,19 +621,26 @@ def main(page: ft.Page):
             refresh_calc_data_async(
                 e, page, auto_code, auto_mode, date_store, auto_name,
                 auto_date_text, auto_real_date, auto_high, auto_low, auto_close,
-                auto_results, calc_btn_auto, source_state, source_label
+                auto_results, calc_btn_auto, source_state, source_label, source_note_text
             )
         )
     )
 
     def switch_and_refresh(new_source):
         _update_source_btns(bs_btn, tx_btn, yh_btn, source_state, new_source, page)
+        # 切换数据源时，如果当前是"按周计算"且新数据源不支持，给出提示但不自动切换
+        if auto_mode.value == "按周计算" and new_source == "腾讯":
+            source_note_text.value = "提示：腾讯不支持按周计算，请切换至Bao或雅虎"
+            source_note_text.color = ft.Colors.ORANGE_700
+            page.update()
+            return
+        source_note_text.value = ""
         if auto_code.value.strip():
             asyncio.create_task(
                 refresh_calc_data_async(
                     None, page, auto_code, auto_mode, date_store, auto_name,
                     auto_date_text, auto_real_date, auto_high, auto_low, auto_close,
-                    auto_results, calc_btn_auto, source_state, source_label
+                    auto_results, calc_btn_auto, source_state, source_label, source_note_text
                 )
             )
 
@@ -590,43 +648,32 @@ def main(page: ft.Page):
     tx_btn.on_click = lambda e: switch_and_refresh("腾讯")
     yh_btn.on_click = lambda e: switch_and_refresh("雅虎")
 
-    # ===== 关于对话框 =====
-    about_dlg = ft.AlertDialog(
-        title=ft.Text("关于", size=16, weight=ft.FontWeight.BOLD),
+    # ===== 底部说明区域（替代关于对话框） =====
+    footer_info = ft.Container(
         content=ft.Column([
-            ft.Text("股票枢轴点计算器 V0.3.2", size=14, weight=ft.FontWeight.BOLD),
             ft.Divider(height=1, color=ft.Colors.GREY_300),
-            ft.Text("行情数据源", size=13, weight=ft.FontWeight.BOLD),
-            ft.Text("• Bao（Baostock）", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_700),
-            ft.Text("  A股历史日线，免费稳定。", size=11),
-            ft.Text("• 腾讯", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_700),
-            ft.Text("  A股实时行情，速度快。", size=11),
-            ft.Text("• 雅虎（Yahoo）", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700),
-            ft.Text("  全球历史，A股/美股/港股。", size=11),
-            ft.Divider(height=1, color=ft.Colors.GREY_300),
-            ft.Text("免责声明", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.RED_600),
-            ft.Text("本工具仅提供技术指标计算，不构成投资建议。", size=11, color=ft.Colors.GREY_700),
-        ], spacing=4, tight=True, scroll=ft.ScrollMode.AUTO),
-        actions=[ft.Button("关闭", on_click=lambda e: _close_about(e))],
-        actions_alignment=ft.MainAxisAlignment.END,
-    )
-    page.overlay.append(about_dlg)
-
-    def _close_about(e):
-        about_dlg.open = False
-        page.update()
-
-    def _show_about(e):
-        about_dlg.open = True
-        page.update()
-
-    about_btn = ft.IconButton(
-        icon=ft.Icons.INFO_OUTLINE, icon_size=14,
-        icon_color=ft.Colors.GREY_400, tooltip="关于",
-        on_click=_show_about
+            ft.Row([
+                ft.Icon(ft.Icons.CLOUD, color=ft.Colors.ORANGE, size=14),
+                ft.Text("Bao：A股历史日线，免费稳定", size=10, color=ft.Colors.GREY_600),
+            ], spacing=4),
+            ft.Row([
+                ft.Icon(ft.Icons.SPEED, color=ft.Colors.GREEN, size=14),
+                ft.Text("腾讯：A股当日行情，非交易日显示最近收盘数据（不支持按周）", size=10, color=ft.Colors.GREY_600),
+            ], spacing=4),
+            ft.Row([
+                ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.BLUE, size=14),
+                ft.Text("雅虎：全球历史行情，非交易日显示最近收盘数据", size=10, color=ft.Colors.GREY_600),
+            ], spacing=4),
+            ft.Divider(height=1, color=ft.Colors.GREY_200),
+            ft.Row([
+                ft.Icon(ft.Icons.WARNING, color=ft.Colors.RED_400, size=12),
+                ft.Text("免责声明：仅提供技术指标计算，不构成投资建议。", size=9, color=ft.Colors.GREY_500),
+            ], spacing=4),
+        ], spacing=4, tight=True),
+        padding=8,
     )
 
-    # ===== 主布局（极致紧凑）=====
+    # ===== 主布局 =====
     main_content = ft.Column([
         ft.Card(
             bgcolor=ft.Colors.WHITE,
@@ -657,12 +704,12 @@ def main(page: ft.Page):
         ),
         calc_btn_auto,
         source_label,
+        source_note_text,
         auto_results,
-        ft.Row([about_btn], alignment=ft.MainAxisAlignment.END),
+        footer_info,
     ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
 
     page.add(ft.SafeArea(expand=True, content=main_content))
-
 
 if __name__ == "__main__":
     ft.run(main)
