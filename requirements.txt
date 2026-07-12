@@ -7,3 +7,4 @@ oauthlib
 packaging
 yfinance
 pandas
+baostock
