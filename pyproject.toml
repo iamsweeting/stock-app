@@ -9,7 +9,9 @@ dependencies = [
     "repath",
     "websocket-client",
     "oauthlib",
-    "packaging"
+    "packaging",
+    "yfinance",
+    "pandas"
 ]
 
 [tool.flet.dependencies]
@@ -21,7 +23,9 @@ packages = [
     "repath",
     "websocket-client",
     "oauthlib",
-    "packaging"
+    "packaging",
+    "yfinance",
+    "pandas"
 ]
 
 [tool.flet.android.meta_data]
