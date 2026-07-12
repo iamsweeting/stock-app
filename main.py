@@ -1,5 +1,5 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V1.0
+# 股票枢轴点计算器 StockPivotCalc V 1.0
 # ==============================================================================
 # 【功能说明】
 #   输入股票代码，选择日期与数据源，自动计算五种枢轴点：
@@ -612,10 +612,11 @@ def main(page: ft.Page):
     calc_btn_auto = ft.Button(
         "计算处理", height=44,
         style=ft.ButtonStyle(
-            bgcolor=ft.Colors.BLUE,
+            bgcolor=ft.Colors.BLUE_600,
             color=ft.Colors.WHITE,
             shape=ft.RoundedRectangleBorder(radius=8),
-            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.BOLD)
+            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.BOLD),
+            overlay_color=ft.Colors.BLUE_800,  # 按压时变深色
         ),
         on_click=lambda e: asyncio.create_task(
             refresh_calc_data_async(
@@ -702,7 +703,7 @@ def main(page: ft.Page):
                 padding=8
             ),
         ),
-        calc_btn_auto,
+        ft.Row([calc_btn_auto], alignment=ft.MainAxisAlignment.CENTER),
         source_label,
         source_note_text,
         auto_results,
@@ -710,6 +711,7 @@ def main(page: ft.Page):
     ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
 
     page.add(ft.SafeArea(expand=True, content=main_content))
+
 
 if __name__ == "__main__":
     ft.run(main)
