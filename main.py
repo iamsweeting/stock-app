@@ -3,21 +3,12 @@
 # 开发环境：Python 3.10+ / Flet 0.80+
 # 打包支持：Windows本地运行 + Android APK打包
 # 依赖库：flet, yfinance, pandas, requests, baostock
-# 安装命令：pip install flet yfinance pandas requests baostock
 # ==============================================================================
 # 【修改记录】
-# V0.3.2 2026-07-12  布局紧凑化：适配手机单屏显示；
-#                     表格列宽缩小+字体缩小，强制横向滚动防溢出；
-#                     股票名称自动根据长度缩小字号；
-#                     按钮/卡片/间距全面压缩；Bao/腾讯/雅虎按钮防换行。
-# V0.3.1 2026-07-12  修复按周计算：周最高/最低取范围极值，收盘取指定日；
-#                     数据源按钮改为中文简称；计算结果标注来源；
-#                     腾讯不支持按周时自动提示。
+# V0.3.2 2026-07-12  布局紧凑化：表格防换行+横向滚动；字号/间距全面压缩；
+#                     按钮样式优化；股票名称自动缩小字号；单屏适配。
+# V0.3.1 2026-07-12  修复按周计算；数据源按钮中文简称；结果标注来源。
 # V0.3   2026-07-12  单页精简版；Baostock/腾讯/Yahoo三源；async安全更新。
-# ==============================================================================
-# 【打包说明】
-# Windows本地：python stockv03.py
-# Android APK：flet build apk --verbose
 # ==============================================================================
 import flet as ft
 from datetime import datetime, timedelta
@@ -350,22 +341,23 @@ def build_all_in_one_table_card(blocks):
     algo_list = [("经典", "经典"), ("斐波", "斐波那契"), ("卡玛", "卡玛利亚"), ("伍迪", "伍迪"), ("迪马克", "迪马克")]
     block_map = {b["title"]: b for b in blocks}
 
+    # 关键：列宽足够容纳7位数字（如1204.98），字体10px防换行
     def make_row(level_name, is_header=False):
         cells = []
         if is_header:
-            txt = ft.Text(" ", size=11, weight=ft.FontWeight.BOLD)
+            txt = ft.Text(" ", size=10, weight=ft.FontWeight.BOLD)
         else:
             c = r_color if level_name.startswith("R") else s_color if level_name.startswith("S") else pp_color
-            txt = ft.Text(level_name, size=11, weight=ft.FontWeight.BOLD, color=c)
-        cells.append(ft.Container(txt, width=32, padding=3))
+            txt = ft.Text(level_name, size=10, weight=ft.FontWeight.BOLD, color=c)
+        cells.append(ft.Container(txt, width=28, padding=2))
         for show_name, data_key in algo_list:
             if is_header:
-                txt = ft.Text(show_name, size=11, weight=ft.FontWeight.BOLD)
+                txt = ft.Text(show_name, size=10, weight=ft.FontWeight.BOLD)
             else:
                 data = block_map[data_key]
                 val = data["pp"] if level_name == "PP" else data["r"].get(level_name, "-") if level_name.startswith("R") else data["s"].get(level_name, "-")
-                txt = ft.Text(val, size=11)
-            cells.append(ft.Container(txt, width=50, padding=3))
+                txt = ft.Text(val, size=10)
+            cells.append(ft.Container(txt, width=56, padding=2))  # 56px足够7位数字
         return ft.Row(cells, spacing=0)
 
     header = make_row("", is_header=True)
@@ -376,24 +368,23 @@ def build_all_in_one_table_card(blocks):
         rows.append(ft.Divider(height=1, color=ft.Colors.GREY_200))
 
     table_col = ft.Column(rows, spacing=0)
-    # 关键：外层Row带横向滚动，不加固定宽度Container，防止截断
-    return ft.Card(
-        bgcolor=ft.Colors.WHITE,
+    # 外层用Container限定最小宽度确保滚动生效，内部Row可横向滚动
+    return ft.Container(
         content=ft.Row([table_col], scroll=ft.ScrollMode.AUTO),
-        elevation=2,
+        padding=6,
     )
 
 
 # ==================== 工具函数 ====================
 
 def show_snack(page, message):
-    page.snack_bar = ft.SnackBar(ft.Text(message, size=13))
+    page.snack_bar = ft.SnackBar(ft.Text(message, size=12))
     page.snack_bar.open = True
     page.update()
 
 
 def _set_name_size(auto_name, stock_name):
-    """根据名称长度自动调整字号，防止换行"""
+    """根据名称长度自动调整字号"""
     ln = len(stock_name)
     if ln > 10:
         auto_name.size = 11
@@ -479,14 +470,14 @@ def _update_source_btns(bs_btn, tx_btn, yh_btn, source_state, new_source, page):
     for btn in [bs_btn, tx_btn, yh_btn]:
         btn.style = ft.ButtonStyle(
             bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800,
-            shape=ft.RoundedRectangleBorder(radius=8),
+            shape=ft.RoundedRectangleBorder(radius=6),
         )
     if new_source == "Bao":
-        bs_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8))
+        bs_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
     elif new_source == "腾讯":
-        tx_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8))
+        tx_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
     elif new_source == "雅虎":
-        yh_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8))
+        yh_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
     page.update()
 
 
@@ -503,59 +494,59 @@ def main(page: ft.Page):
     date_store = [datetime.now().date()]
     source_state = ["Bao"]
 
-    # ===== 数据源切换按钮（紧凑，防换行）=====
+    # ===== 数据源切换按钮（紧凑）=====
     bs_btn = ft.Button(
-        "Bao", expand=1, height=36,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8)),
+        "Bao", expand=1, height=34,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
     )
     tx_btn = ft.Button(
-        "腾讯", expand=1, height=36,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=8)),
+        "腾讯", expand=1, height=34,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
     yh_btn = ft.Button(
-        "雅虎", expand=1, height=36,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=8)),
+        "雅虎", expand=1, height=34,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
 
     # ===== 输入控件（紧凑）=====
     auto_code = ft.TextField(
         label="股票代码", hint_text="如600519",
-        expand=1, value="600519", text_size=14,
-        label_style=ft.TextStyle(size=12)
+        expand=1, value="600519", text_size=13,
+        label_style=ft.TextStyle(size=11), content_padding=8
     )
     auto_mode = ft.Dropdown(
         label="计算模式",
         options=[ft.DropdownOption("按日计算"), ft.DropdownOption("按周计算")],
-        value="按日计算", expand=1, text_size=13,
-        label_style=ft.TextStyle(size=12)
+        value="按日计算", expand=1, text_size=12,
+        label_style=ft.TextStyle(size=11), content_padding=8
     )
     auto_date_text = ft.Text(
-        date_store[0].strftime('%Y-%m-%d'), size=14,
+        date_store[0].strftime('%Y-%m-%d'), size=13,
         selectable=True, weight=ft.FontWeight.BOLD
     )
     auto_real_date = ft.Text(
-        "行情日：待查询", size=12,
+        "行情日：待查询", size=11,
         color=ft.Colors.BLUE_800, selectable=True
     )
     auto_name = ft.Text(
-        "名称：等待获取...", size=14,
+        "名称：等待获取...", size=13,
         color=ft.Colors.GREY_700, selectable=True, weight=ft.FontWeight.BOLD,
         no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1
     )
     auto_high = ft.TextField(
         label="最高", keyboard_type=ft.KeyboardType.NUMBER,
-        expand=1, read_only=True, text_size=14
+        expand=1, read_only=True, text_size=13, content_padding=8
     )
     auto_low = ft.TextField(
         label="最低", keyboard_type=ft.KeyboardType.NUMBER,
-        expand=1, read_only=True, text_size=14
+        expand=1, read_only=True, text_size=13, content_padding=8
     )
     auto_close = ft.TextField(
         label="收盘", keyboard_type=ft.KeyboardType.NUMBER,
-        expand=1, read_only=True, text_size=14
+        expand=1, read_only=True, text_size=13, content_padding=8
     )
-    source_label = ft.Text("", size=11, color=ft.Colors.GREY_600, italic=True, selectable=True)
-    auto_results = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=8, expand=True)
+    source_label = ft.Text("", size=10, color=ft.Colors.GREY_600, italic=True, selectable=True)
+    auto_results = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=6, expand=True)
 
     date_picker = ft.DatePicker(
         value=date_store[0],
@@ -568,10 +559,12 @@ def main(page: ft.Page):
         page.update()
 
     calc_btn_auto = ft.Button(
-        "计算处理", height=48,
+        "计算处理", height=44,
         style=ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE,
+            color=ft.Colors.WHITE,
             shape=ft.RoundedRectangleBorder(radius=8),
-            text_style=ft.TextStyle(size=15, weight=ft.FontWeight.BOLD)
+            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.BOLD)
         ),
         on_click=lambda e: asyncio.create_task(
             refresh_calc_data_async(
@@ -628,45 +621,45 @@ def main(page: ft.Page):
         page.update()
 
     about_btn = ft.IconButton(
-        icon=ft.Icons.INFO_OUTLINE, icon_size=16,
+        icon=ft.Icons.INFO_OUTLINE, icon_size=14,
         icon_color=ft.Colors.GREY_400, tooltip="关于",
         on_click=_show_about
     )
 
-    # ===== 主布局（紧凑间距）=====
+    # ===== 主布局（极致紧凑）=====
     main_content = ft.Column([
         ft.Card(
             bgcolor=ft.Colors.WHITE,
             content=ft.Container(
                 content=ft.Column([
                     ft.Row([
-                        ft.Text("行情源:", size=13, color=ft.Colors.GREY_700),
+                        ft.Text("行情源:", size=12, color=ft.Colors.GREY_700),
                         bs_btn, tx_btn, yh_btn,
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=6),
                     ft.Divider(height=1, color=ft.Colors.GREY_200),
                     ft.Row([auto_code, auto_mode], spacing=8),
                     auto_name,
                     ft.Row([
-                        ft.Text("指定日期:", size=13),
+                        ft.Text("指定日期:", size=12),
                         auto_date_text,
-                        ft.IconButton(ft.Icons.CALENDAR_TODAY, icon_size=20, on_click=open_date_picker),
+                        ft.IconButton(ft.Icons.CALENDAR_TODAY, icon_size=18, on_click=open_date_picker),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     auto_real_date,
-                ], spacing=6), padding=10
+                ], spacing=4), padding=8
             ),
         ),
         ft.Card(
             bgcolor=ft.Colors.WHITE,
             content=ft.Container(
                 content=ft.Row([auto_high, auto_low, auto_close], spacing=8),
-                padding=10
+                padding=8
             ),
         ),
         calc_btn_auto,
         source_label,
         auto_results,
         ft.Row([about_btn], alignment=ft.MainAxisAlignment.END),
-    ], spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
 
     page.add(ft.SafeArea(expand=True, content=main_content))
 
