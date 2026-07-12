@@ -11,7 +11,8 @@ dependencies = [
     "oauthlib",
     "packaging",
     "yfinance",
-    "pandas"
+    "pandas",
+    "baostock"
 ]
 
 [tool.flet.dependencies]
@@ -25,7 +26,8 @@ packages = [
     "oauthlib",
     "packaging",
     "yfinance",
-    "pandas"
+    "pandas",
+    "baostock"
 ]
 
 [tool.flet.android.meta_data]
