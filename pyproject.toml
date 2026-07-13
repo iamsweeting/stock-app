@@ -10,6 +10,7 @@ dependencies = [
     "websocket-client",
     "oauthlib",
     "packaging",
+    "yfinance",
     "pandas",
     "baostock"
 ]
@@ -24,6 +25,7 @@ packages = [
     "websocket-client",
     "oauthlib",
     "packaging",
+    "yfinance",
     "pandas",
     "baostock"
 ]
