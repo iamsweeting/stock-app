@@ -46,6 +46,6 @@ jobs:
       - name: 上传APK安装包
         uses: actions/upload-artifact@v4
         with:
-          name: stock-app-apk
+          name: BatchStock
           path: build/apk/
           retention-days: 30
