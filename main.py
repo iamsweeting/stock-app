@@ -1,5 +1,5 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V 1.0
+# 股票枢轴点计算器 StockPivotCalc V1.1.2
 # ==============================================================================
 # 【功能说明】
 #   输入股票代码，选择日期与数据源，自动计算五种枢轴点：
@@ -8,18 +8,33 @@
 #   3. 卡玛利亚枢轴点 (Camarilla Pivot)
 #   4. 伍迪枢轴点 (Woodie's Pivot)
 #   5. 迪马克枢轴点 (DeMark Pivot)
-#   支持按日/按周计算，支持A股/美股/港股行情。
+#   支持按日/按周计算，支持A股历史行情。
+#
+# 【复权说明】
+#   Bao 使用 adjustflag=2 前复权，新浪接口返回前复权数据。
+#   股票的分红、拆股、配股等除权除息，复权价格保持历史连续性。
+#   腾讯实时数据为当前复权价。
+#   【ETF基金特别说明】ETF（如159516）存在份额折算/合并机制，
+#   与股票分红送股不同。Baostock等免费数据源主要面向股票复权，
+#   对ETF份额折算的复权支持有限，可能导致折算前后价格不连续。
+#   若ETF近期发生份额折算，建议用新浪数据源核对关键日期数据。
 #
 # 【行情数据源】
-#   Bao (Baostock)  : A股历史日线，免费稳定，支持按日/按周
-#   腾讯 (Tencent)  : A股当日行情，非交易日显示最近收盘数据，仅支持按日
-#   雅虎 (Yahoo)    : 全球历史行情，非交易日显示最近收盘数据，支持按日/按周
+#   Bao (Baostock)  : A股前复权历史日线，免费稳定，支持按日/按周
+#   腾讯 (Tencent)  : A股当日复权行情，非交易日显示最近收盘数据，仅支持按日
+#   新浪 (Sina)      : A股前复权历史行情，支持按日/按周
 #
 # 【开发环境】Python 3.10+ / Flet 0.80+
 # 【打包支持】Windows本地运行 + Android APK打包
-# 【依赖库】flet, yfinance, pandas, requests, baostock
+# 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
+# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
+#                    复权说明补充ETF基金份额折算机制说明。
+# V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
+#                    复权说明补充ETF基金注意事项；顶部注释完善。
+# V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据；
+#                   新增复权说明；修复日期选择器时区偏移；增大表格字体。
 # V0.3.4 2026-07-12  修复移动端复制；底部添加数据源说明与免责声明；
 #                    修复按周计算切换数据源时的状态残留问题。
 # V0.3.3 2026-07-12  关于对话框美化；表格单元格可点击复制。
@@ -41,9 +56,9 @@ from requests.exceptions import RequestException, ConnectionError, Timeout
 _baostock_logged_in = False
 _baostock_name_cache = {}
 
-# Yahoo 简单缓存
-_yahoo_cache = {}
-_yahoo_cache_time = {}
+# 新浪 简单缓存
+_sina_cache = {}
+_sina_cache_time = {}
 _CACHE_TTL = 300
 
 
@@ -105,7 +120,7 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
     try:
         rs = bs.query_history_k_data_plus(
             bs_code, "date,open,high,low,close,volume",
-            start_date=start, end_date=end, frequency="d", adjustflag="3"
+            start_date=start, end_date=end, frequency="d", adjustflag="2"
         )
         if rs.error_code != '0':
             return {"err": "api", "msg": f"Baostock接口错误：{rs.error_msg}"}
@@ -146,74 +161,104 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
         return {"err": "other", "msg": f"Baostock异常：{str(e)}"}
 
 
-def _get_yahoo_data(stock_code, target_date, weekly=False):
-    code = stock_code.strip().upper()
-    has_suffix = any(sep in code for sep in ['.', '-'])
-    if not has_suffix and code.isdigit():
-        if code.startswith(("5", "6")):
-            code = code + ".SS"
-        elif code.startswith(("0", "1", "3")):
-            code = code + ".SZ"
-        else:
-            return {"err": "code", "msg": "A股代码仅支持0/1/3/5/6开头\n美股直接输入如AAPL"}
-    cache_key = f"{code}_{target_date}_{weekly}"
-    now = time.time()
-    if cache_key in _yahoo_cache and (now - _yahoo_cache_time.get(cache_key, 0)) < _CACHE_TTL:
-        return _yahoo_cache[cache_key]
-    try:
-        start = target_date - timedelta(days=20)
-        end = target_date + timedelta(days=1)
-        time.sleep(2.0)
-        df = yf.download(code, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), progress=False, auto_adjust=False)
-        if df.empty:
-            return {"err": "empty", "msg": f"Yahoo：未找到 {code} 数据"}
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        if hasattr(df.index, 'tz') and df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        target_str = target_date.strftime('%Y-%m-%d')
-        if weekly:
-            week_start = target_date - timedelta(days=6)
-            week_mask = (df.index.date >= week_start) & (df.index.date <= target_date)
-            week_df = df[week_mask]
-            if week_df.empty:
-                return {"err": "empty", "msg": f"Yahoo：{target_str} 前6天无数据"}
-            high = float(week_df['High'].max())
-            low = float(week_df['Low'].min())
-            close_row = df[df.index.date <= target_date].iloc[-1]
-            close = float(close_row['Close'])
-            real_day = close_row.name.strftime('%Y-%m-%d')
-            result = (code, high, low, close, real_day, target_str)
-            _yahoo_cache[cache_key] = result
-            _yahoo_cache_time[cache_key] = now
-            return result
-        date_mask = df.index.strftime('%Y-%m-%d') == target_str
-        if date_mask.any():
-            row = df[date_mask].iloc[-1]
-            real_day = target_str
-        else:
-            valid = df[df.index.date <= target_date]
-            if valid.empty:
-                return {"err": "empty", "msg": f"Yahoo：{target_date} 及之前无有效数据"}
-            row = valid.iloc[-1]
-            real_day = valid.index[-1].strftime('%Y-%m-%d')
-        stock_name = code
+def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
+    """新浪财经K线接口，返回前复权日线数据"""
+    code = stock_code.strip()
+    if code.startswith(("5", "6")):
+        sina_code = f"sh{code}"
+    elif code.startswith(("0", "1", "3")):
+        sina_code = f"sz{code}"
+    else:
+        return {"err": "code", "msg": "新浪仅支持0/1/3/5/6开头A股代码"}
+
+    target_str = target_date.strftime('%Y-%m-%d')
+    # 新浪接口最多返回1023条数据，按周计算需要更多
+    if weekly:
+        datalen = 300
+    else:
+        datalen = 150
+
+    for attempt in range(retry + 1):
         try:
-            ticker = yf.Ticker(code)
-            info = ticker.info
-            if info:
-                stock_name = info.get('shortName', info.get('longName', code))
-        except Exception:
-            pass
-        result = (stock_name, float(row['High']), float(row['Low']), float(row['Close']), real_day, target_str)
-        _yahoo_cache[cache_key] = result
-        _yahoo_cache_time[cache_key] = now
-        return result
-    except Exception as e:
-        err_msg = str(e)
-        if "Rate" in err_msg or "Too Many" in err_msg or "rate" in err_msg.lower():
-            return {"err": "rate", "msg": "Yahoo 请求过于频繁，请稍后重试"}
-        return {"err": "other", "msg": f"Yahoo异常：{err_msg}"}
+            if attempt > 0:
+                time.sleep(1.0)
+
+            # 新浪财经K线接口，scale=240表示日线，返回前复权数据
+            url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen={datalen}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://finance.sina.com.cn/',
+            }
+            resp = get(url, headers=headers, timeout=15)
+
+            if resp.status_code != 200:
+                if attempt < retry:
+                    continue
+                return {"err": "http", "msg": f"新浪：HTTP {resp.status_code}"}
+
+            # 新浪返回的是JSON格式
+            data = resp.json()
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                if attempt < retry:
+                    continue
+                return {"err": "empty", "msg": f"新浪：未找到 {code} 数据"}
+
+            records = []
+            for item in data:
+                if isinstance(item, dict):
+                    records.append({
+                        'date': item.get('day', ''),
+                        'open': float(item.get('open', 0)),
+                        'close': float(item.get('close', 0)),
+                        'high': float(item.get('high', 0)),
+                        'low': float(item.get('low', 0)),
+                        'volume': float(item.get('volume', 0)),
+                    })
+
+            if not records:
+                if attempt < retry:
+                    continue
+                return {"err": "empty", "msg": f"新浪：{target_str} 无数据"}
+
+            df = pd.DataFrame(records)
+            df['date'] = pd.to_datetime(df['date'])
+
+            if weekly:
+                week_start = target_date - timedelta(days=6)
+                week_mask = (df['date'].dt.date >= week_start) & (df['date'].dt.date <= target_date)
+                week_df = df[week_mask]
+                if week_df.empty:
+                    if attempt < retry:
+                        continue
+                    return {"err": "empty", "msg": f"新浪：{target_str} 前6天无数据"}
+                high = float(week_df['high'].max())
+                low = float(week_df['low'].min())
+                close_row = df[df['date'].dt.date <= target_date].iloc[-1]
+                close = float(close_row['close'])
+                real_day = close_row['date'].strftime('%Y-%m-%d')
+                return (code, high, low, close, real_day, target_str)
+
+            date_mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
+            if date_mask.any():
+                row = df[date_mask].iloc[-1]
+                real_day = target_str
+            else:
+                valid = df[df['date'].dt.date <= target_date]
+                if valid.empty:
+                    if attempt < retry:
+                        continue
+                    return {"err": "empty", "msg": f"新浪：{target_str} 及之前无有效数据"}
+                row = valid.iloc[-1]
+                real_day = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
+
+            return (code, float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
+        except Exception as e:
+            if attempt < retry:
+                continue
+            return {"err": "other", "msg": f"新浪异常：{str(e)}"}
+
+    return {"err": "fail", "msg": "新浪多次重试失败"}
 
 
 def _get_tencent_data(stock_code, target_date, retry):
@@ -253,13 +298,13 @@ def _get_tencent_data(stock_code, target_date, retry):
 
 def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False):
     target_date = target_date.date() if isinstance(target_date, datetime) else target_date
-    if source == "Bao":
+    if source == "Baostock":
         return _get_baostock_data(stock_code, target_date, weekly=weekly)
-    elif source == "雅虎":
-        return _get_yahoo_data(stock_code, target_date, weekly=weekly)
-    elif source == "腾讯":
+    elif source == "新浪财经":
+        return _get_sina_kline_data(stock_code, target_date, weekly=weekly)
+    elif source == "腾讯实时":
         if weekly:
-            return {"err": "weekly", "msg": "腾讯仅支持实时行情，无法按周计算，请切换至Bao或雅虎"}
+            return {"err": "weekly", "msg": "腾讯仅支持实时行情，无法按周计算，请切换至Bao或新浪"}
         return _get_tencent_data(stock_code, target_date, retry)
     else:
         return {"err": "source", "msg": "未知数据源"}
@@ -376,9 +421,19 @@ def build_all_in_one_table_card(blocks, page):
             page.update()
         return handler
 
-    def make_cell(text, width, color=None, bold=False, size=10):
+    def make_cell(text, width, color=None, bold=False, size=13):
+        # 根据文本长度动态调整字体，差距拉大便于肉眼区分
+        txt_len = len(str(text))
+        if txt_len >= 9:
+            adaptive_size = 8
+        elif txt_len >= 8:
+            adaptive_size = 10
+        elif txt_len >= 7:
+            adaptive_size = 11
+        else:
+            adaptive_size = 13  # 5-6位用13号大字
         txt = ft.Text(
-            text, size=size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
+            text, size=adaptive_size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
             color=color, no_wrap=True, selectable=True
         )
         return ft.Container(
@@ -393,17 +448,17 @@ def build_all_in_one_table_card(blocks, page):
     def make_row(level_name, is_header=False):
         cells = []
         if is_header:
-            cells.append(make_cell(" ", 28, size=10, bold=True))
+            cells.append(make_cell(" ", 28, size=11, bold=True))
         else:
             c = r_color if level_name.startswith("R") else s_color if level_name.startswith("S") else pp_color
-            cells.append(make_cell(level_name, 28, color=c, bold=True, size=10))
+            cells.append(make_cell(level_name, 28, color=c, bold=True, size=11))
         for show_name, data_key in algo_list:
             if is_header:
-                cells.append(make_cell(show_name, 56, size=10, bold=True))
+                cells.append(make_cell(show_name, 56, size=11, bold=True))
             else:
                 data = block_map[data_key]
                 val = data["pp"] if level_name == "PP" else data["r"].get(level_name, "-") if level_name.startswith("R") else data["s"].get(level_name, "-")
-                cells.append(make_cell(val, 56, size=10))
+                cells.append(make_cell(val, 56, size=13))
         return ft.Row(cells, spacing=0)
 
     header = make_row("", is_header=True)
@@ -470,8 +525,8 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             auto_name.value = "名称：获取失败"
             source_label.value = ""
             # 更新数据源提示
-            if weekly and source in ("腾讯", "雅虎"):
-                source_note_text.value = "提示：按周计算请使用Bao数据源"
+            if weekly and source in ("腾讯", "新浪"):
+                source_note_text.value = "提示：按周计算请使用Baostock数据源"
                 source_note_text.color = ft.Colors.ORANGE_700
             else:
                 source_note_text.value = ""
@@ -512,31 +567,40 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
 
 
 def date_change_event(e, page, auto_date_text, date_store):
-    date_store[0] = e.control.value
+    picked = e.control.value
+    if picked is None:
+        return
+    # DatePicker在移动端可能返回UTC时间，需要+8小时修正为北京时间
+    if isinstance(picked, datetime):
+        # 加8小时偏移（UTC->北京时间），再取日期
+        corrected = picked + timedelta(hours=8)
+        date_store[0] = corrected.date()
+    else:
+        date_store[0] = picked
     auto_date_text.value = date_store[0].strftime('%Y-%m-%d')
     page.update()
 
 
-def _update_source_btns(bs_btn, tx_btn, yh_btn, source_state, new_source, page):
+def _update_source_btns(bs_btn, tx_btn, xl_btn, source_state, new_source, page):
     source_state[0] = new_source
-    for btn in [bs_btn, tx_btn, yh_btn]:
+    for btn in [bs_btn, tx_btn, xl_btn]:
         btn.style = ft.ButtonStyle(
             bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800,
             shape=ft.RoundedRectangleBorder(radius=6),
         )
-    if new_source == "Bao":
+    if new_source == "Baostock":
         bs_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
-    elif new_source == "腾讯":
+    elif new_source == "腾讯实时":
         tx_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
-    elif new_source == "雅虎":
-        yh_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
+    elif new_source == "新浪财经":
+        xl_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
     page.update()
 
 
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "股票枢轴点 V0.3.4"
+    page.title = "股票枢轴点 V1.1.2"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
@@ -544,7 +608,7 @@ def main(page: ft.Page):
     page.window_height = 880
 
     date_store = [datetime.now().date()]
-    source_state = ["Bao"]
+    source_state = ["Baostock"]
 
     bs_btn = ft.Button(
         "Bao", expand=1, height=34,
@@ -554,8 +618,8 @@ def main(page: ft.Page):
         "腾讯", expand=1, height=34,
         style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
-    yh_btn = ft.Button(
-        "雅虎", expand=1, height=34,
+    xl_btn = ft.Button(
+        "新浪", expand=1, height=34,
         style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
 
@@ -628,10 +692,10 @@ def main(page: ft.Page):
     )
 
     def switch_and_refresh(new_source):
-        _update_source_btns(bs_btn, tx_btn, yh_btn, source_state, new_source, page)
+        _update_source_btns(bs_btn, tx_btn, xl_btn, source_state, new_source, page)
         # 切换数据源时，如果当前是"按周计算"且新数据源不支持，给出提示但不自动切换
-        if auto_mode.value == "按周计算" and new_source == "腾讯":
-            source_note_text.value = "提示：腾讯不支持按周计算，请切换至Bao或雅虎"
+        if auto_mode.value == "按周计算" and new_source == "腾讯实时":
+            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至Baostock或新浪财经"
             source_note_text.color = ft.Colors.ORANGE_700
             page.update()
             return
@@ -645,9 +709,9 @@ def main(page: ft.Page):
                 )
             )
 
-    bs_btn.on_click = lambda e: switch_and_refresh("Bao")
-    tx_btn.on_click = lambda e: switch_and_refresh("腾讯")
-    yh_btn.on_click = lambda e: switch_and_refresh("雅虎")
+    bs_btn.on_click = lambda e: switch_and_refresh("Baostock")
+    tx_btn.on_click = lambda e: switch_and_refresh("腾讯实时")
+    xl_btn.on_click = lambda e: switch_and_refresh("新浪财经")
 
     # ===== 底部说明区域（替代关于对话框） =====
     footer_info = ft.Container(
@@ -655,20 +719,24 @@ def main(page: ft.Page):
             ft.Divider(height=1, color=ft.Colors.GREY_300),
             ft.Row([
                 ft.Icon(ft.Icons.CLOUD, color=ft.Colors.ORANGE, size=14),
-                ft.Text("Bao：A股历史日线，免费稳定", size=10, color=ft.Colors.GREY_600),
+                ft.Text("Baostock：A股前复权历史日线，免费稳定", size=10, color=ft.Colors.GREY_600),
             ], spacing=4),
             ft.Row([
                 ft.Icon(ft.Icons.SPEED, color=ft.Colors.GREEN, size=14),
-                ft.Text("腾讯：A股当日行情，非交易日显示最近收盘数据（不支持按周）", size=10, color=ft.Colors.GREY_600),
+                ft.Text("腾讯实时：A股当日行情，非交易日显示最近收盘数据（不支持按周）", size=10, color=ft.Colors.GREY_600),
             ], spacing=4),
             ft.Row([
                 ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.BLUE, size=14),
-                ft.Text("雅虎：全球历史行情，非交易日显示最近收盘数据", size=10, color=ft.Colors.GREY_600),
+                ft.Text("新浪财经：A股前复权历史行情，数据稳定", size=10, color=ft.Colors.GREY_600),
             ], spacing=4),
             ft.Divider(height=1, color=ft.Colors.GREY_200),
             ft.Row([
                 ft.Icon(ft.Icons.WARNING, color=ft.Colors.RED_400, size=12),
                 ft.Text("免责声明：仅提供技术指标计算，不构成投资建议。", size=9, color=ft.Colors.GREY_500),
+            ], spacing=4),
+            ft.Row([
+                ft.Icon(ft.Icons.INFO, color=ft.Colors.GREY_400, size=10),
+                ft.Text("行情源数据非付费，ETF拆分/折算日附近计算可能不准。", size=9, color=ft.Colors.GREY_500),
             ], spacing=4),
         ], spacing=4, tight=True),
         padding=8,
@@ -682,7 +750,7 @@ def main(page: ft.Page):
                 content=ft.Column([
                     ft.Row([
                         ft.Text("行情源:", size=12, color=ft.Colors.GREY_700),
-                        bs_btn, tx_btn, yh_btn,
+                        bs_btn, tx_btn, xl_btn,
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=6),
                     ft.Divider(height=1, color=ft.Colors.GREY_200),
                     ft.Row([auto_code, auto_mode], spacing=8),
@@ -708,7 +776,7 @@ def main(page: ft.Page):
         source_note_text,
         auto_results,
         footer_info,
-    ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+    ], spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
 
     page.add(ft.SafeArea(expand=True, content=main_content))
 
