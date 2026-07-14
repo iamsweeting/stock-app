@@ -1,11 +1,12 @@
 # ==============================================================================
-# 股票枢轴点批量计算器 BatchStock V2.5
+# 股票枢轴点批量计算器 BatchStock V2.6
 # ==============================================================================
 # 【功能说明】
 #   输入多个股票代码（逗号/分号/空格/换行隔开），选择日期与数据源，
 #   自动计算指定枢轴点算法，批量输出结果表格。
 #   支持五种枢轴点算法：经典、斐波那契、卡玛利亚、伍迪、迪马克。
 #   支持按日/按周计算，支持A股历史行情。
+#   点击表格单元格可复制单个值，点击整行可复制该行全部数据。
 #
 # 【复权说明】
 #   Bao 使用 adjustflag=2 前复权，新浪接口返回前复权数据。
@@ -31,10 +32,11 @@
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
-# V2.5  2026-07-14  复制功能优化：复制内容增加标题行（表头）；
+# V2.6  2026-07-14  去除"复制全部"功能按钮及所有相关功能（复制稳定性问题）。
+#                    保留单元格点击复制和整行点击复制。
+# V2.5  2026-07-14  复制功能优化：复制内容增加标题行；
 #                    手动复制框增加"×"关闭按钮，避免堆积；
-#                    Android提示语改为"长按文本框全选后复制"；
-#                    每次点击"复制全部"先清除旧的手动复制框。
+#                    Android提示语改为"长按文本框全选后复制"。
 # V2.4  2026-07-14  修复Windows复制为空：明确声明ctypes函数原型（64位指针不截断）；
 #                    增加tkinter fallback（Python标准库，跨线程安全）；
 #                    复制失败时弹出文本框供手动复制。
@@ -60,7 +62,6 @@ from requests.exceptions import RequestException, ConnectionError, Timeout
 import re
 import sys
 import os
-import tempfile
 import subprocess
 
 # ========== 平台检测 ==========
@@ -757,87 +758,11 @@ def show_snack(page, message):
     page.update()
 
 
-def _build_copy_all_handler(results, page, result_area, manual_copy_state):
-    """
-    构建复制全部结果的回调。
-    包含标题行，自动复制失败时弹出可关闭的手动复制框。
-    Android提示语适配手机操作（长按全选复制）。
-    """
-    def handler(e):
-        # 先移除之前的手动复制框（避免堆积）
-        if manual_copy_state[0] is not None and manual_copy_state[0] in result_area.controls:
-            result_area.controls.remove(manual_copy_state[0])
-            manual_copy_state[0] = None
-
-        # 构建带标题的复制文本
-        lines = ["代码\t名称\tPP\tR1\tS1\tR2\tS2\tR3\tS3\tR4\tS4"]
-        for r in results:
-            if r.get("status") == "ok":
-                lines.append(f"{r['code']}\t{r['name']}\t{r['pp']}\t{r['r1']}\t{r['s1']}\t{r['r2']}\t{r['s2']}\t{r['r3']}\t{r['s3']}\t{r['r4']}\t{r['s4']}")
-        text = "\n".join(lines)
-
-        # 尝试自动复制
-        success = copy_to_clipboard(text, page)
-
-        if success:
-            page.snack_bar = ft.SnackBar(ft.Text("已复制全部结果（含标题行，可直接粘贴Excel）", size=12))
-            page.snack_bar.open = True
-            page.update()
-        else:
-            # 自动复制失败，弹出可关闭的手动复制框
-            # 平台适配提示语
-            if _IS_ANDROID:
-                hint_text = "长按文本框 → 全选 → 复制"
-            else:
-                hint_text = "Ctrl+A 全选，Ctrl+C 复制"
-
-            def close_manual_copy(e):
-                if manual_copy_state[0] is not None and manual_copy_state[0] in result_area.controls:
-                    result_area.controls.remove(manual_copy_state[0])
-                    manual_copy_state[0] = None
-                page.update()
-
-            manual_copy_field = ft.Column([
-                ft.Row([
-                    ft.Text(f"⚠ 自动复制失败，请手动复制 ({hint_text})", size=12, color=ft.Colors.ORANGE_700, weight=ft.FontWeight.BOLD, expand=True),
-                    ft.IconButton(
-                        ft.Icons.CLOSE,
-                        icon_size=18,
-                        icon_color=ft.Colors.GREY_600,
-                        tooltip="关闭",
-                        on_click=close_manual_copy,
-                    ),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.TextField(
-                    value=text,
-                    multiline=True,
-                    min_lines=3,
-                    max_lines=10,
-                    read_only=True,
-                    text_size=11,
-                    border_color=ft.Colors.ORANGE,
-                    bgcolor=ft.Colors.ORANGE_50,
-                    selectable=True,
-                ),
-            ], spacing=4)
-
-            # 插入到结果表格之前（索引1位置，在统计行之后）
-            insert_idx = 1 if len(result_area.controls) > 1 else len(result_area.controls)
-            result_area.controls.insert(insert_idx, manual_copy_field)
-            manual_copy_state[0] = manual_copy_field
-
-            page.snack_bar = ft.SnackBar(ft.Text("已弹出手动复制框，点击×可关闭", size=12))
-            page.snack_bar.open = True
-            page.update()
-
-    return handler
-
-
 # ==================== 批量计算事件 ====================
 
 async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_state,
                            algo_dropdown, result_area, calc_btn, source_label,
-                           source_note_text, status_text, manual_copy_state):
+                           source_note_text, status_text):
     raw_text = code_input.value.strip()
     if not raw_text:
         show_snack(page, "请输入股票代码")
@@ -908,25 +833,10 @@ async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_st
         ok_count = sum(1 for r in results if r["status"] == "ok")
         err_count = total - ok_count
 
-        # 复制全部按钮
-        copy_all_btn = ft.TextButton(
-            "复制全部",
-            icon=ft.Icons.CONTENT_COPY,
-            style=ft.ButtonStyle(color=ft.Colors.BLUE_600),
-            on_click=_build_copy_all_handler(results, page, result_area, manual_copy_state)
-        )
-
-        # 清空结果区域（保留手动复制框状态由handler管理）
         result_area.controls = [
-            ft.Row([
-                ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-                copy_all_btn,
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
             result_table,
         ]
-        # 重置手动复制框状态（因为result_area.controls被重建了）
-        manual_copy_state[0] = None
-
         source_label.value = f"来源：{source} | 算法：{algorithm} | 模式：{mode}"
         status_text.value = f"就绪 | 共 {total} 条"
 
@@ -978,8 +888,6 @@ def main(page: ft.Page):
 
     date_store = [datetime.now().date()]
     source_state = ["新浪财经"]
-    # 手动复制框状态追踪（用于避免堆积和关闭）
-    manual_copy_state = [None]
 
     # ===== 数据源按钮：新浪优先，Bao次之，腾讯最后 =====
     xl_btn = ft.Button(
@@ -1064,7 +972,7 @@ def main(page: ft.Page):
             batch_calc_async(
                 e, page, code_input, auto_mode, date_store, source_state,
                 algo_dropdown, result_area, calc_btn, source_label,
-                source_note_text, status_text, manual_copy_state
+                source_note_text, status_text
             )
         )
     )
