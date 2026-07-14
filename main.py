@@ -1,13 +1,5 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V1.1.3
-# ==============================================================================
-# 【Android打包配置】
-#   应用中文名：在 pyproject.toml 中设置
-#   [project]
-#   name = "stockpivotcalc"
-#   [tool.flet.android]
-#   name = "股票枢轴点"
-#   或在 GitHub Actions 中：flet build apk --name "股票枢轴点"
+# 股票枢轴点计算器 StockPivotCalc V1.1.4
 # ==============================================================================
 # 【功能说明】
 #   输入股票代码，选择日期与数据源，自动计算五种枢轴点：
@@ -37,8 +29,7 @@
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
-# V1.1.3 2026-07-14  数据源顺序调整：默认新浪，Bao后置；版本更新。
-# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
+# V1.1.4 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
 #                    复权说明补充ETF基金份额折算机制说明。
 # V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
 #                    复权说明补充ETF基金注意事项；顶部注释完善。
@@ -59,177 +50,6 @@ import pandas as pd
 import requests
 from requests import get
 from requests.exceptions import RequestException, ConnectionError, Timeout
-import sys
-import os
-import subprocess
-
-# ========== 平台检测 ==========
-_PLATFORM = sys.platform
-_IS_ANDROID = False
-try:
-    if 'ANDROID_ROOT' in os.environ or 'ANDROID_DATA' in os.environ:
-        _IS_ANDROID = True
-    elif _PLATFORM.startswith('linux') and not os.path.exists('/proc/version'):
-        _IS_ANDROID = True
-except Exception:
-    pass
-
-_SUBPROCESS_AVAILABLE = True
-try:
-    if _PLATFORM == 'win32':
-        subprocess.run(['cmd', '/c', 'echo', 'test'], capture_output=True, timeout=2)
-    else:
-        subprocess.run(['echo', 'test'], capture_output=True, timeout=2)
-except Exception:
-    _SUBPROCESS_AVAILABLE = False
-    _IS_ANDROID = True
-
-# ========== Windows 剪贴板：ctypes Win32 API（明确声明原型，64位安全） ==========
-_WIN_CLIPBOARD_AVAILABLE = False
-if _PLATFORM == 'win32' and not _IS_ANDROID:
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-
-        GlobalAlloc = kernel32.GlobalAlloc
-        GlobalAlloc.argtypes = [wintypes.UINT, wintypes.SIZE_T]
-        GlobalAlloc.restype = wintypes.HGLOBAL
-
-        GlobalLock = kernel32.GlobalLock
-        GlobalLock.argtypes = [wintypes.HGLOBAL]
-        GlobalLock.restype = wintypes.LPVOID
-
-        GlobalUnlock = kernel32.GlobalUnlock
-        GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-        GlobalUnlock.restype = wintypes.BOOL
-
-        OpenClipboard = user32.OpenClipboard
-        OpenClipboard.argtypes = [wintypes.HWND]
-        OpenClipboard.restype = wintypes.BOOL
-
-        EmptyClipboard = user32.EmptyClipboard
-        EmptyClipboard.restype = wintypes.BOOL
-
-        SetClipboardData = user32.SetClipboardData
-        SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-        SetClipboardData.restype = wintypes.HANDLE
-
-        CloseClipboard = user32.CloseClipboard
-        CloseClipboard.restype = wintypes.BOOL
-
-        _WIN_CLIPBOARD_AVAILABLE = True
-    except Exception:
-        pass
-
-# ========== 跨平台剪贴板复制函数 ==========
-
-def _win32_set_clipboard(text):
-    """Windows: ctypes调用Win32 API，明确声明原型，64位指针安全"""
-    if not _WIN_CLIPBOARD_AVAILABLE:
-        return False
-    try:
-        import ctypes
-        CF_UNICODETEXT = 13
-        GMEM_MOVEABLE = 0x0002
-        text_bytes = (text + '\0').encode('utf-16le')
-        size = len(text_bytes)
-        h_mem = GlobalAlloc(GMEM_MOVEABLE, size)
-        if not h_mem:
-            return False
-        ptr = GlobalLock(h_mem)
-        if not ptr:
-            return False
-        ctypes.memmove(ptr, text_bytes, size)
-        GlobalUnlock(h_mem)
-        if not OpenClipboard(None):
-            return False
-        EmptyClipboard()
-        SetClipboardData(CF_UNICODETEXT, h_mem)
-        CloseClipboard()
-        return True
-    except Exception:
-        return False
-
-
-def _tkinter_set_clipboard(text):
-    """跨平台：使用tkinter（Python标准库），跨线程安全"""
-    try:
-        import tkinter as tk
-        r = tk.Tk()
-        r.withdraw()
-        r.clipboard_clear()
-        r.clipboard_append(text)
-        r.update()
-        r.destroy()
-        return True
-    except Exception:
-        return False
-
-
-def copy_to_clipboard(text, page=None):
-    """
-    跨平台复制到剪贴板，多策略fallback确保可靠性。
-    Windows: ctypes Win32 API → tkinter → Flet API
-    Android: Flet API
-    Linux/Mac: xclip/pbcopy → tkinter → Flet API
-    """
-    if _IS_ANDROID or not _SUBPROCESS_AVAILABLE:
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
-    if _PLATFORM == 'win32':
-        if _win32_set_clipboard(text):
-            return True
-        if _tkinter_set_clipboard(text):
-            return True
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
-    elif _PLATFORM == 'darwin':
-        try:
-            subprocess.run(['pbcopy'], input=text.encode('utf-8'), check=True, timeout=5)
-            return True
-        except Exception:
-            pass
-        if _tkinter_set_clipboard(text):
-            return True
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
-    else:
-        try:
-            subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode('utf-8'), check=True, timeout=5)
-            return True
-        except Exception:
-            pass
-        if _tkinter_set_clipboard(text):
-            return True
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
 
 # Baostock 懒登录状态
 _baostock_logged_in = False
@@ -340,37 +160,34 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
         return {"err": "other", "msg": f"Baostock异常：{str(e)}"}
 
 
-def _get_stock_name(stock_code):
-    """通过腾讯实时接口获取股票名称"""
-    code = stock_code.strip()
-    if code.startswith(("5", "6")):
-        prefix = "sh"
-    elif code.startswith(("0", "1", "3")):
-        prefix = "sz"
-    else:
-        return code
-    try:
-        url = f"https://qt.gtimg.cn/q={prefix}{code}"
-        resp = get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        text = resp.text
-        if '~' in text:
-            parts = text.split('~')
-            if len(parts) > 1 and parts[1]:
-                return parts[1]
-    except Exception:
-        pass
-    return code
-
-
 def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
     """新浪财经K线接口，返回前复权日线数据"""
     code = stock_code.strip()
     if code.startswith(("5", "6")):
         sina_code = f"sh{code}"
+        tencent_prefix = "sh"
     elif code.startswith(("0", "1", "3")):
         sina_code = f"sz{code}"
+        tencent_prefix = "sz"
     else:
         return {"err": "code", "msg": "新浪仅支持0/1/3/5/6开头A股代码"}
+
+    # 通过腾讯接口获取股票名称（新浪K线接口不返回名称）
+    stock_name = code  # 默认用代码作为名称
+    try:
+        name_url = f"https://qt.gtimg.cn/q={tencent_prefix}{code}"
+        name_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Connection': 'close',
+        }
+        name_resp = get(name_url, headers=name_headers, timeout=8)
+        name_text = name_resp.text
+        if '~' in name_text:
+            name_parts = name_text.split('~')
+            if len(name_parts) > 2 and name_parts[1]:
+                stock_name = name_parts[1]
+    except Exception:
+        pass  # 获取名称失败时，仍使用代码作为名称
 
     target_str = target_date.strftime('%Y-%m-%d')
     # 新浪接口最多返回1023条数据，按周计算需要更多
@@ -438,7 +255,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                 close_row = df[df['date'].dt.date <= target_date].iloc[-1]
                 close = float(close_row['close'])
                 real_day = close_row['date'].strftime('%Y-%m-%d')
-                return (_get_stock_name(code), high, low, close, real_day, target_str)
+                return (stock_name, high, low, close, real_day, target_str)
 
             date_mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
             if date_mask.any():
@@ -453,7 +270,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                 row = valid.iloc[-1]
                 real_day = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
 
-            return (_get_stock_name(code), float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
+            return (stock_name, float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
         except Exception as e:
             if attempt < retry:
                 continue
@@ -610,27 +427,9 @@ def build_all_in_one_table_card(blocks, page):
     algo_list = [("经典", "经典"), ("斐波", "斐波那契"), ("卡玛", "卡玛利亚"), ("伍迪", "伍迪"), ("迪马克", "迪马克")]
     block_map = {b["title"]: b for b in blocks}
 
-    # 复制全部结果 —— 参考BatchStock跨平台Clipboard实现
-    def _copy_all(e):
-        lines = ["算法	等级	数值"]
-        for b in blocks:
-            lines.append(f"{b['title']}	PP	{b['pp']}")
-            for k, v in sorted(b['r'].items()):
-                lines.append(f"{b['title']}	{k}	{v}")
-            for k, v in sorted(b['s'].items()):
-                lines.append(f"{b['title']}	{k}	{v}")
-            lines.append("")
-        text = "\n".join(lines)
-
-        success = copy_to_clipboard(text, page)
-        if success:
-            page.snack_bar = ft.SnackBar(ft.Text("已复制全部结果", size=12))
-        else:
-            page.snack_bar = ft.SnackBar(ft.Text("复制失败，请长按表格手动选择复制", size=12))
-        page.snack_bar.open = True
-        page.update()
     def _copy_cell(text):
         def handler(e):
+            # 移动端使用 SnackBar 提示，桌面端尝试 set_clipboard
             try:
                 page.set_clipboard(str(text))
             except Exception:
@@ -641,6 +440,7 @@ def build_all_in_one_table_card(blocks, page):
         return handler
 
     def make_cell(text, width, color=None, bold=False, size=13):
+        # 根据文本长度动态调整字体，差距拉大便于肉眼区分
         txt_len = len(str(text))
         if txt_len >= 9:
             adaptive_size = 8
@@ -649,7 +449,7 @@ def build_all_in_one_table_card(blocks, page):
         elif txt_len >= 7:
             adaptive_size = 11
         else:
-            adaptive_size = 13
+            adaptive_size = 13  # 5-6位用13号大字
         txt = ft.Text(
             text, size=adaptive_size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
             color=color, no_wrap=True, selectable=True
@@ -676,7 +476,7 @@ def build_all_in_one_table_card(blocks, page):
             else:
                 data = block_map[data_key]
                 val = data["pp"] if level_name == "PP" else data["r"].get(level_name, "-") if level_name.startswith("R") else data["s"].get(level_name, "-")
-                cells.append(make_cell(val, 56, size=10))
+                cells.append(make_cell(val, 56, size=13))
         return ft.Row(cells, spacing=0)
 
     header = make_row("", is_header=True)
@@ -687,21 +487,8 @@ def build_all_in_one_table_card(blocks, page):
         rows.append(ft.Divider(height=1, color=ft.Colors.GREY_200))
 
     table_col = ft.Column(rows, spacing=0)
-
-    # 表格右上方复制按钮
-    copy_btn = ft.IconButton(
-        icon=ft.Icons.COPY_ALL,
-        icon_size=18,
-        icon_color=ft.Colors.BLUE_600,
-        tooltip="复制全部结果",
-        on_click=_copy_all,
-    )
-
     return ft.Container(
-        content=ft.Column([
-            ft.Row([copy_btn], alignment=ft.MainAxisAlignment.END),
-            ft.Row([table_col], scroll=ft.ScrollMode.AUTO),
-        ], spacing=0),
+        content=ft.Row([table_col], scroll=ft.ScrollMode.AUTO),
         padding=6,
     )
 
@@ -757,7 +544,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             source_label.value = ""
             # 更新数据源提示
             if weekly and source in ("腾讯", "新浪"):
-                source_note_text.value = "提示：按周计算请使用新浪财经或Baostock数据源"
+                source_note_text.value = "提示：按周计算请使用Baostock数据源"
                 source_note_text.color = ft.Colors.ORANGE_700
             else:
                 source_note_text.value = ""
@@ -785,9 +572,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
                 res = [ft.Text("❌ 行情数值异常", color=ft.Colors.RED, size=12)]
             else:
                 blocks = parse_results(calculate_pivot_points(high, low, close))
-                res = [
-                    build_all_in_one_table_card(blocks, page),
-                ]
+                res = [build_all_in_one_table_card(blocks, page)]
         auto_results.controls = res
     except Exception as e:
         auto_results.controls = [ft.Text(f"错误: {e}", color=ft.Colors.RED, size=12)]
@@ -816,7 +601,7 @@ def date_change_event(e, page, auto_date_text, date_store):
 
 def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
     source_state[0] = new_source
-    for btn in [bs_btn, tx_btn, xl_btn]:
+    for btn in [xl_btn, bs_btn, tx_btn]:
         btn.style = ft.ButtonStyle(
             bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800,
             shape=ft.RoundedRectangleBorder(radius=6),
@@ -833,7 +618,7 @@ def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "股票枢轴点 V1.1.3"
+    page.title = "股票枢轴点 V1.1.4"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
@@ -843,8 +628,10 @@ def main(page: ft.Page):
     date_store = [datetime.now().date()]
     source_state = ["新浪财经"]
 
-
-
+    xl_btn = ft.Button(
+        "新浪", expand=1, height=34,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
+    )
     bs_btn = ft.Button(
         "Bao", expand=1, height=34,
         style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
@@ -852,10 +639,6 @@ def main(page: ft.Page):
     tx_btn = ft.Button(
         "腾讯", expand=1, height=34,
         style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
-    )
-    xl_btn = ft.Button(
-        "新浪", expand=1, height=34,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
     )
 
     auto_code = ft.TextField(
@@ -930,15 +713,11 @@ def main(page: ft.Page):
         _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page)
         # 切换数据源时，如果当前是"按周计算"且新数据源不支持，给出提示但不自动切换
         if auto_mode.value == "按周计算" and new_source == "腾讯实时":
-            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至新浪财经或Baostock"
+            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至Baostock或新浪财经"
             source_note_text.color = ft.Colors.ORANGE_700
             page.update()
             return
-        # 清空之前的提示和结果，确保切换后界面及时刷新
         source_note_text.value = ""
-        source_label.value = ""
-        auto_results.controls = []
-        page.update()
         if auto_code.value.strip():
             asyncio.create_task(
                 refresh_calc_data_async(
@@ -948,9 +727,9 @@ def main(page: ft.Page):
                 )
             )
 
-    xl_btn.on_click = lambda e: switch_and_refresh("新浪财经")
     bs_btn.on_click = lambda e: switch_and_refresh("Baostock")
     tx_btn.on_click = lambda e: switch_and_refresh("腾讯实时")
+    xl_btn.on_click = lambda e: switch_and_refresh("新浪财经")
 
     # ===== 底部说明区域（替代关于对话框） =====
     footer_info = ft.Container(
@@ -991,7 +770,6 @@ def main(page: ft.Page):
                         ft.Text("行情源:", size=12, color=ft.Colors.GREY_700),
                         xl_btn, bs_btn, tx_btn,
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=6),
-                    ft.Divider(height=1, color=ft.Colors.GREY_200),
                     ft.Row([auto_code, auto_mode], spacing=8),
                     auto_name,
                     ft.Row([
@@ -1000,7 +778,6 @@ def main(page: ft.Page):
                         ft.IconButton(ft.Icons.CALENDAR_TODAY, icon_size=18, on_click=open_date_picker),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     auto_real_date,
-
                 ], spacing=4), padding=8
             ),
         ),
