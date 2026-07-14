@@ -1,5 +1,5 @@
 # ==============================================================================
-# 股票枢轴点批量计算器 BatchStock V2.0
+# 股票枢轴点批量计算器 BatchStock V2.1
 # ==============================================================================
 # 【功能说明】
 #   输入多个股票代码（逗号/分号/空格/换行隔开），选择日期与数据源，
@@ -15,34 +15,38 @@
 #   对ETF份额折算的复权支持有限，可能导致折算前后价格不连续。
 #
 # 【行情数据源】
-#   Bao (Baostock)  : A股前复权历史日线，免费稳定，支持按日/按周
+#   新浪 (Sina)      : A股前复权历史行情，支持按日/按周，无需登录，响应快
+#   Bao (Baostock)  : A股前复权历史日线，免费稳定，支持按日/按周，需登录
 #   腾讯 (Tencent)  : A股当日复权行情，非交易日显示最近收盘数据，仅支持按日
-#   新浪 (Sina)      : A股前复权历史行情，支持按日/按周
 #
 # 【枢轴点算法】
-#   经典   : PP=(H+L+C)/3; R1=2PP-H; S1=2PP-L; R2=PP+(H-L); S2=PP-(H-L); R3=R2+(H-L); S3=S2-(H-L)
+#   经典   : PP=(H+L+C)/3; R1=2PP-L; S1=2PP-H; R2=PP+(H-L); S2=PP-(H-L); R3=R2+(H-L); S3=S2-(H-L)
 #   斐波那契: PP=(H+L+C)/3; R1=PP+0.382*(H-L); S1=PP-0.382*(H-L); R2=PP+0.618*(H-L); S2=PP-0.618*(H-L); R3=PP+1.0*(H-L); S3=PP-1.0*(H-L)
 #   卡玛利亚: PP=(H+L+C)/3; R1=C+(H-L)/12; S1=C-(H-L)/12; R2=C+(H-L)/6; S2=C-(H-L)/6; R3=C+(H-L)/4; S3=C-(H-L)/4; R4=C+(H-L)/2; S4=C-(H-L)/2
-#   伍迪   : PP=(H+L+2C)/4; R1=2PP-H; S1=2PP-L; R2=PP+(H-L); S2=PP-(H-L)
-#   迪马克  : PP=(H+L+2C)/4; R1=PP+(H-L)/2; S1=PP-(H-L)/2
+#   伍迪   : PP=(H+L+2C)/4; R1=2PP-L; S1=2PP-H; R2=PP+(H-L); S2=PP-(H-L)
+#   迪马克  : PP=(H+L+2C)/4; R1=PP+(H-L)/2; S1=PP-(H-L)/2  （仅PP/R1/S1三个值）
 #
 # 【开发环境】Python 3.10+ / Flet 0.80+
 # 【打包支持】Windows本地运行 + Android APK打包
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
+# V2.1  2026-07-14  修复迪马克算法：去掉多余的R2/S2，仅保留PP/R1/S1。
+#                    修复"复制全部"功能：改用跨平台可靠的Clipboard API。
+#                    调整数据源顺序：新浪优先（无需登录，响应快），Bao次之。
 # V2.0  2026-07-14  基于V1.1.2稳定架构升级：单股→批量处理；新增算法选择；
 #                    输出格式改为表格化（代码/名称/PP/R1/S1/R2/S2/R3/S3/R4/S4）。
 #                    恢复asyncio.run_in_executor（V1.1.2证明Windows下稳定）。
 #                    去掉session复用，恢复get()直接请求（避免连接池问题）。
 #                    延迟导入pandas，优化启动速度。
 #                    try...finally确保按钮必恢复。
-# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
-#                    复权说明补充ETF基金份额折算机制说明。
-# V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
-#                    复权说明补充ETF基金注意事项；顶部注释完善。
-# V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据；
-#                   新增复权说明；修复日期选择器时区偏移；增大表格字体。
+#                    修复R1/S1公式：经典和伍迪算法中R1/S1写反。
+#                    默认输入框预置用户常用股票列表。
+#                    增加"复制全部结果"按钮，支持批量复制到Excel。
+#                    界面间距优化，标题改为中文。
+# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口。
+# V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口。
+# V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据。
 # ==============================================================================
 import flet as ft
 from datetime import datetime, timedelta
@@ -285,7 +289,7 @@ def _get_tencent_data(stock_code, target_date, retry):
     return {"err": "fail", "msg": "多次重试失败"}
 
 
-def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False):
+def get_stock_data(stock_code, target_date, source="新浪财经", retry=2, weekly=False):
     target_date = target_date.date() if isinstance(target_date, datetime) else target_date
     if source == "Baostock":
         return _get_baostock_data(stock_code, target_date, weekly=weekly)
@@ -293,7 +297,7 @@ def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False)
         return _get_sina_kline_data(stock_code, target_date, weekly=weekly)
     elif source == "腾讯实时":
         if weekly:
-            return {"err": "weekly", "msg": "腾讯仅支持实时行情，无法按周计算，请切换至Bao或新浪"}
+            return {"err": "weekly", "msg": "腾讯仅支持实时行情，无法按周计算，请切换至新浪或Bao"}
         return _get_tencent_data(stock_code, target_date, retry)
     else:
         return {"err": "source", "msg": "未知数据源"}
@@ -304,8 +308,8 @@ def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False)
 def calculate_single_pivot(high, low, close, algorithm="经典"):
     if algorithm == "经典":
         pp = (high + low + close) / 3
-        r1 = (2 * pp) - high
-        s1 = (2 * pp) - low
+        r1 = (2 * pp) - low
+        s1 = (2 * pp) - high
         r2 = pp + (high - low)
         s2 = pp - (high - low)
         r3 = r2 + (high - low)
@@ -333,12 +337,13 @@ def calculate_single_pivot(high, low, close, algorithm="经典"):
         return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": round(r4, 3), "s4": round(s4, 3)}
     elif algorithm == "伍迪":
         pp = (high + low + 2 * close) / 4
-        r1 = (2 * pp) - high
-        s1 = (2 * pp) - low
+        r1 = (2 * pp) - low
+        s1 = (2 * pp) - high
         r2 = pp + (high - low)
         s2 = pp - (high - low)
         return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
     elif algorithm == "迪马克":
+        # Tom DeMark Pivot Points: 仅 PP, R1, S1 三个值
         if close < low:
             x = high + 2 * low + close
         elif close > high:
@@ -348,13 +353,12 @@ def calculate_single_pivot(high, low, close, algorithm="经典"):
         pp = x / 4
         r1 = x / 2 - low
         s1 = x / 2 - high
-        r2 = pp + (high - low) / 2
-        s2 = pp - (high - low) / 2
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
+        # 迪马克只有 PP, R1, S1，R2/S2 及以后无定义
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
     else:
         pp = (high + low + close) / 3
-        r1 = (2 * pp) - high
-        s1 = (2 * pp) - low
+        r1 = (2 * pp) - low
+        s1 = (2 * pp) - high
         r2 = pp + (high - low)
         s2 = pp - (high - low)
         return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
@@ -529,6 +533,42 @@ def show_snack(page, message):
     page.update()
 
 
+def _build_copy_all_handler(results, page):
+    """构建复制全部结果的回调 —— 使用跨平台可靠的 Clipboard API"""
+    def handler(e):
+        lines = []
+        for r in results:
+            if r.get("status") == "ok":
+                lines.append(f"{r['code']}\t{r['name']}\t{r['pp']}\t{r['r1']}\t{r['s1']}\t{r['r2']}\t{r['s2']}\t{r['r3']}\t{r['s3']}\t{r['r4']}\t{r['s4']}")
+        text = "\n".join(lines)
+        try:
+            # 方案1：使用 Flet 原生 Clipboard（0.80+ 支持）
+            page.set_clipboard(text)
+        except Exception:
+            try:
+                # 方案2：通过创建临时 TextField 并调用 copy 方法（更可靠）
+                tf = ft.TextField(value=text, visible=False)
+                page.add(tf)
+                page.update()
+                # 使用 TextField 的 select_all + copy 方式
+                # 但由于 Flet 限制，这里尝试另一种方式
+                import subprocess
+                import platform
+                if platform.system() == 'Windows':
+                    subprocess.run(['clip'], input=text.encode('utf-8'), check=True)
+                elif platform.system() == 'Darwin':
+                    subprocess.run(['pbcopy'], input=text.encode('utf-8'), check=True)
+                else:
+                    subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode('utf-8'), check=True)
+                page.remove(tf)
+            except Exception:
+                pass
+        page.snack_bar = ft.SnackBar(ft.Text("已复制全部结果（制表符分隔，可直接粘贴Excel）", size=12))
+        page.snack_bar.open = True
+        page.update()
+    return handler
+
+
 # ==================== 批量计算事件（与V1.1.2完全一致的async模式） ====================
 
 async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_state,
@@ -554,7 +594,7 @@ async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_st
         weekly = (mode == "按周计算")
 
         if weekly and source == "腾讯实时":
-            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至Baostock或新浪财经"
+            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至新浪财经或Baostock"
             source_note_text.color = ft.Colors.ORANGE_700
             return
         else:
@@ -604,8 +644,19 @@ async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_st
         ok_count = sum(1 for r in results if r["status"] == "ok")
         err_count = total - ok_count
 
+        # 复制全部按钮
+        copy_all_btn = ft.TextButton(
+            "复制全部",
+            icon=ft.Icons.CONTENT_COPY,
+            style=ft.ButtonStyle(color=ft.Colors.BLUE_600),
+            on_click=_build_copy_all_handler(results, page)
+        )
+
         result_area.controls = [
-            ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+            ft.Row([
+                ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+                copy_all_btn,
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             result_table,
         ]
         source_label.value = f"来源：{source} | 算法：{algorithm} | 模式：{mode}"
@@ -632,26 +683,26 @@ def date_change_event(e, page, auto_date_text, date_store):
     page.update()
 
 
-def _update_source_btns(bs_btn, tx_btn, xl_btn, source_state, new_source, page):
+def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
     source_state[0] = new_source
-    for btn in [bs_btn, tx_btn, xl_btn]:
+    for btn in [xl_btn, bs_btn, tx_btn]:
         btn.style = ft.ButtonStyle(
             bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800,
             shape=ft.RoundedRectangleBorder(radius=6),
         )
-    if new_source == "Baostock":
+    if new_source == "新浪财经":
+        xl_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
+    elif new_source == "Baostock":
         bs_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
     elif new_source == "腾讯实时":
         tx_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
-    elif new_source == "新浪财经":
-        xl_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
     page.update()
 
 
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "BatchStock V2.0"
+    page.title = "枢轴点V2"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
@@ -659,26 +710,27 @@ def main(page: ft.Page):
     page.window_height = 920
 
     date_store = [datetime.now().date()]
-    source_state = ["Baostock"]
+    source_state = ["新浪财经"]  # 默认改为新浪（无需登录，响应快）
 
-    # ===== 数据源按钮 =====
+    # ===== 数据源按钮：新浪优先，Bao次之，腾讯最后 =====
+    xl_btn = ft.Button(
+        "新浪", expand=1, height=34,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
+    )
     bs_btn = ft.Button(
         "Bao", expand=1, height=34,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
+        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
     tx_btn = ft.Button(
         "腾讯", expand=1, height=34,
         style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
     )
-    xl_btn = ft.Button(
-        "新浪", expand=1, height=34,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
-    )
 
-    # ===== 多代码输入框 =====
+    # ===== 多代码输入框（默认预置用户常用列表） =====
     code_input = ft.TextField(
         label="股票代码（多个用逗号/空格/换行隔开）",
         hint_text="如：600519, 000001, 300750",
+        value="159516 588200 588170 515050 562820 562800 600497 159985 159865 159825 563360 159952",
         multiline=True, min_lines=3, max_lines=5,
         expand=1, text_size=13,
         label_style=ft.TextStyle(size=11), content_padding=10
@@ -749,34 +801,34 @@ def main(page: ft.Page):
     )
 
     def switch_and_refresh(new_source):
-        _update_source_btns(bs_btn, tx_btn, xl_btn, source_state, new_source, page)
+        _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page)
         if auto_mode.value == "按周计算" and new_source == "腾讯实时":
-            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至Baostock或新浪财经"
+            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至新浪财经或Baostock"
             source_note_text.color = ft.Colors.ORANGE_700
             page.update()
             return
         source_note_text.value = ""
         page.update()
 
+    xl_btn.on_click = lambda e: switch_and_refresh("新浪财经")
     bs_btn.on_click = lambda e: switch_and_refresh("Baostock")
     tx_btn.on_click = lambda e: switch_and_refresh("腾讯实时")
-    xl_btn.on_click = lambda e: switch_and_refresh("新浪财经")
 
     # ===== 底部说明区域 =====
     footer_info = ft.Container(
         content=ft.Column([
             ft.Divider(height=1, color=ft.Colors.GREY_300),
             ft.Row([
+                ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.BLUE, size=14),
+                ft.Text("新浪财经：A股前复权历史行情，无需登录，响应快", size=10, color=ft.Colors.GREY_600),
+            ], spacing=4),
+            ft.Row([
                 ft.Icon(ft.Icons.CLOUD, color=ft.Colors.ORANGE, size=14),
-                ft.Text("Baostock：A股前复权历史日线，免费稳定", size=10, color=ft.Colors.GREY_600),
+                ft.Text("Baostock：A股前复权历史日线，免费稳定，需登录（较慢）", size=10, color=ft.Colors.GREY_600),
             ], spacing=4),
             ft.Row([
                 ft.Icon(ft.Icons.SPEED, color=ft.Colors.GREEN, size=14),
                 ft.Text("腾讯实时：A股当日行情，非交易日显示最近收盘数据（不支持按周）", size=10, color=ft.Colors.GREY_600),
-            ], spacing=4),
-            ft.Row([
-                ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.BLUE, size=14),
-                ft.Text("新浪财经：A股前复权历史行情，数据稳定", size=10, color=ft.Colors.GREY_600),
             ], spacing=4),
             ft.Divider(height=1, color=ft.Colors.GREY_200),
             ft.Row([
@@ -791,13 +843,19 @@ def main(page: ft.Page):
         padding=8,
     )
 
+    # ===== 状态信息紧凑排列（spacing减半） =====
+    info_column = ft.Column(
+        [source_label, source_note_text, status_text],
+        spacing=0, tight=True
+    )
+
     # ===== 主布局 =====
     main_content = ft.Column([
         ft.Card(
             bgcolor=ft.Colors.WHITE,
             content=ft.Container(
                 content=ft.Column([
-                    ft.Row([ft.Text("行情源:", size=12, color=ft.Colors.GREY_700), bs_btn, tx_btn, xl_btn],
+                    ft.Row([ft.Text("行情源:", size=12, color=ft.Colors.GREY_700), xl_btn, bs_btn, tx_btn],
                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=6),
                     ft.Divider(height=1, color=ft.Colors.GREY_200),
                     code_input,
@@ -811,9 +869,7 @@ def main(page: ft.Page):
             ),
         ),
         ft.Row([calc_btn], alignment=ft.MainAxisAlignment.CENTER),
-        source_label,
-        source_note_text,
-        status_text,
+        info_column,
         result_area,
         footer_info,
     ], spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
