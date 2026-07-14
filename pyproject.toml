@@ -1,5 +1,5 @@
 [project]
-name = "枢轴点"
+name = "stock_pivot_calc"
 version = "1.1.4"
 requires-python = ">=3.10"
 dependencies = [
@@ -36,4 +36,10 @@ packages = [
 
 [tool.flet.app]
 # 主程序在项目根目录
-path = "."
+path = "."  
+
+# 新增安卓打包配置
+[tool.flet.android]
+app_name = "枢轴点"
+package_name = "iamsweeting.stockpivotv1"
+permissions = ["INTERNET"]
