@@ -1,5 +1,5 @@
 [project]
-name = "BatchStock"
+name = "枢轴点V2"
 version = "2.0"
 requires-python = ">=3.10"
 dependencies = [
