@@ -1,8 +1,9 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V1.1.4
+# 股票枢轴点计算器 StockPivotCalc V1.5
 # ==============================================================================
 # 【功能说明】
-#   输入股票代码，选择日期与数据源，自动计算五种枢轴点：
+#   输入股票代码，选择日期与数据源，自动计算五种枢轴点。
+#   计算用历史数据，验证用下一交易日/下一周数据，误差≤5%标绿。
 #   1. 经典枢轴点 (Classic Pivot)
 #   2. 斐波那契枢轴点 (Fibonacci Pivot)
 #   3. 卡玛利亚枢轴点 (Camarilla Pivot)
@@ -29,7 +30,7 @@
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
-# V1.1.4 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
+# V1.5 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
 #                    复权说明补充ETF基金份额折算机制说明。
 # V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
 #                    复权说明补充ETF基金注意事项；顶部注释完善。
@@ -51,7 +52,7 @@ import requests
 from requests import get
 from requests.exceptions import RequestException, ConnectionError, Timeout
 
-# Baostock 懒登录状态
+# Baostock 懒登录状态（首次使用时才登录，避免启动阻塞）
 _baostock_logged_in = False
 _baostock_name_cache = {}
 
@@ -139,23 +140,59 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
             week_df = df[week_mask]
             if week_df.empty:
                 return {"err": "empty", "msg": f"Baostock：{target_str} 前6天无数据"}
-            high = float(week_df['high'].max())
-            low = float(week_df['low'].min())
-            close_row = df[df['date'].dt.date <= target_date].iloc[-1]
-            close = float(close_row['close'])
-            real_day = close_row['date'].strftime('%Y-%m-%d')
-            return (_get_baostock_name(bs_code), high, low, close, real_day, target_str)
+            calc_high = float(week_df['high'].max())
+            calc_low = float(week_df['low'].min())
+            calc_close = float(week_df.iloc[-1]['close'])
+            calc_date = f"{week_df.iloc[0]['date'].strftime('%m-%d')}~{week_df.iloc[-1]['date'].strftime('%m-%d')}"
+            # 验证数据：下一周
+            next_week_start = target_date + timedelta(days=1)
+            next_week_end = target_date + timedelta(days=7)
+            verify_mask = (df['date'].dt.date >= next_week_start) & (df['date'].dt.date <= next_week_end)
+            verify_df = df[verify_mask]
+            if verify_df.empty:
+                verify_df = df[df['date'].dt.date > target_date]
+                if verify_df.empty:
+                    verify_df = df[df['date'].dt.date <= target_date]
+                verify_mode = "latest"
+            else:
+                verify_mode = "next_week"
+            verify_high = float(verify_df['high'].max())
+            verify_low = float(verify_df['low'].min())
+            verify_close = float(verify_df.iloc[-1]['close'])
+            verify_date = f"{verify_df.iloc[0]['date'].strftime('%m-%d')}~{verify_df.iloc[-1]['date'].strftime('%m-%d')}"
+            return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_date, target_str,
+                    verify_high, verify_low, verify_close, verify_date, verify_mode)
         mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
         if mask.any():
-            row = df[mask].iloc[-1]
-            real_day = target_str
+            calc_row = df[mask].iloc[-1]
+            calc_date = target_str
         else:
             valid = df[df['date'].dt.date <= target_date]
             if valid.empty:
                 return {"err": "empty", "msg": f"Baostock：{target_str} 及之前无有效数据"}
-            row = valid.iloc[-1]
-            real_day = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
-        return (_get_baostock_name(bs_code), float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
+            calc_row = valid.iloc[-1]
+            calc_date = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
+        calc_high = float(calc_row['high'])
+        calc_low = float(calc_row['low'])
+        calc_close = float(calc_row['close'])
+        # 验证数据：下一天
+        calc_idx = df[df['date'].dt.date <= target_date].index[-1] if not df[df['date'].dt.date <= target_date].empty else -1
+        if calc_idx >= 0 and calc_idx + 1 < len(df):
+            verify_row = df.iloc[calc_idx + 1]
+            verify_high = float(verify_row['high'])
+            verify_low = float(verify_row['low'])
+            verify_close = float(verify_row['close'])
+            verify_date = verify_row['date'].strftime('%Y-%m-%d')
+            verify_mode = "next_day"
+        else:
+            verify_row = df.iloc[-1]
+            verify_high = float(verify_row['high'])
+            verify_low = float(verify_row['low'])
+            verify_close = float(verify_row['close'])
+            verify_date = verify_row['date'].strftime('%Y-%m-%d')
+            verify_mode = "latest"
+        return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_date, target_str,
+                verify_high, verify_low, verify_close, verify_date, verify_mode)
     except Exception as e:
         return {"err": "other", "msg": f"Baostock异常：{str(e)}"}
 
@@ -250,27 +287,64 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                     if attempt < retry:
                         continue
                     return {"err": "empty", "msg": f"新浪：{target_str} 前6天无数据"}
-                high = float(week_df['high'].max())
-                low = float(week_df['low'].min())
-                close_row = df[df['date'].dt.date <= target_date].iloc[-1]
-                close = float(close_row['close'])
-                real_day = close_row['date'].strftime('%Y-%m-%d')
-                return (stock_name, high, low, close, real_day, target_str)
+                calc_high = float(week_df["high"].max())
+                calc_low = float(week_df["low"].min())
+                calc_close = float(week_df.iloc[-1]["close"])
+                calc_date = f"{week_df.iloc[0]['date'].strftime('%m-%d')}~{week_df.iloc[-1]['date'].strftime('%m-%d')}"
+                # 验证数据：下一周
+                next_week_start = target_date + timedelta(days=1)
+                next_week_end = target_date + timedelta(days=7)
+                verify_mask = (df['date'].dt.date >= next_week_start) & (df['date'].dt.date <= next_week_end)
+                verify_df = df[verify_mask]
+                if verify_df.empty:
+                    verify_df = df[df['date'].dt.date > target_date]
+                    if verify_df.empty:
+                        verify_df = df[df['date'].dt.date <= target_date]
+                        verify_mode = "latest"
+                    else:
+                        verify_mode = "next_week"
+                else:
+                    verify_mode = "next_week"
+                verify_high = float(verify_df['high'].max())
+                verify_low = float(verify_df['low'].min())
+                verify_close = float(verify_df.iloc[-1]['close'])
+                verify_date = f"{verify_df.iloc[0]['date'].strftime('%m-%d')}~{verify_df.iloc[-1]['date'].strftime('%m-%d')}"
+                return (stock_name, calc_high, calc_low, calc_close, calc_date, target_str,
+                        verify_high, verify_low, verify_close, verify_date, verify_mode)
 
             date_mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
             if date_mask.any():
-                row = df[date_mask].iloc[-1]
-                real_day = target_str
+                calc_row = df[date_mask].iloc[-1]
+                calc_date = target_str
             else:
-                valid = df[df['date'].dt.date <= target_date]
+                valid = df[df["date"].dt.date <= target_date]
                 if valid.empty:
                     if attempt < retry:
                         continue
                     return {"err": "empty", "msg": f"新浪：{target_str} 及之前无有效数据"}
-                row = valid.iloc[-1]
-                real_day = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
-
-            return (stock_name, float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
+                calc_row = valid.iloc[-1]
+                calc_date = valid.iloc[-1]["date"].strftime("%Y-%m-%d")
+            calc_high = float(calc_row["high"])
+            calc_low = float(calc_row["low"])
+            calc_close = float(calc_row["close"])
+            # 验证数据：下一天
+            calc_idx = df[df["date"].dt.date <= target_date].index[-1] if not df[df["date"].dt.date <= target_date].empty else -1
+            if calc_idx >= 0 and calc_idx + 1 < len(df):
+                verify_row = df.iloc[calc_idx + 1]
+                verify_high = float(verify_row['high'])
+                verify_low = float(verify_row['low'])
+                verify_close = float(verify_row['close'])
+                verify_date = verify_row['date'].strftime('%Y-%m-%d')
+                verify_mode = "next_day"
+            else:
+                verify_row = df.iloc[-1]
+                verify_high = float(verify_row['high'])
+                verify_low = float(verify_row['low'])
+                verify_close = float(verify_row['close'])
+                verify_date = verify_row['date'].strftime('%Y-%m-%d')
+                verify_mode = "latest"
+            return (stock_name, calc_high, calc_low, calc_close, calc_date, target_str,
+                    verify_high, verify_low, verify_close, verify_date, verify_mode)
         except Exception as e:
             if attempt < retry:
                 continue
@@ -280,7 +354,10 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
 
 
 def _get_tencent_data(stock_code, target_date, retry):
+    """腾讯实时接口：仅返回当天数据，验证数据与计算数据相同"""
+    from datetime import date as dt_date
     date_show = target_date.strftime('%Y-%m-%d')
+    today = dt_date.today()
     if stock_code.startswith(("5", "6")):
         prefix = "sh"
     elif stock_code.startswith(("0", "1", "3")):
@@ -303,7 +380,19 @@ def _get_tencent_data(stock_code, target_date, retry):
                     continue
                 return {"err": "parse", "msg": "腾讯接口格式异常"}
             parts = text.split('~')
-            return (parts[1], float(parts[33]), float(parts[34]), float(parts[3]), date_show, date_show)
+            name = parts[1]
+            high = float(parts[33])
+            low = float(parts[34])
+            close = float(parts[3])
+            # 腾讯只有当天数据，计算和验证用同一组数据
+            if target_date == today:
+                verify_mode = "same_day"
+                verify_date = date_show
+            else:
+                verify_mode = "unsupported"
+                verify_date = "腾讯仅当天"
+            return (name, high, low, close, date_show, date_show,
+                    high, low, close, verify_date, verify_mode)
         except (RequestException, ConnectionError, Timeout):
             if attempt < retry:
                 time.sleep(1)
@@ -419,7 +508,7 @@ def parse_results(results):
 
 # ==================== 可点击复制的表格（移动端适配） ====================
 
-def build_all_in_one_table_card(blocks, page):
+def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None, verify_close=None):
     r_color = ft.Colors.RED_400
     s_color = ft.Colors.GREEN_400
     pp_color = ft.Colors.BLUE_700
@@ -427,9 +516,103 @@ def build_all_in_one_table_card(blocks, page):
     algo_list = [("经典", "经典"), ("斐波", "斐波那契"), ("卡玛", "卡玛利亚"), ("伍迪", "伍迪"), ("迪马克", "迪马克")]
     block_map = {b["title"]: b for b in blocks}
 
+    # ===== 全局比较：所有算法的所有R值 vs 验证最高价，所有S值 vs 验证最低价 =====
+    # PP不参与比较（单值无意义）
+    # 最优误差≤1%标红色(R)/绿色(S)，次优误差≤2%标橙色(R)/黄色(S)
+    best_r_global = {"red": set(), "orange": set()}  # {(data_key, level_name)}
+    best_s_global = {"green": set(), "yellow": set()}  # {(data_key, level_name)}
+
+    if verify_high is not None and verify_high > 0:
+        all_r = []
+        for show_name, data_key in algo_list:
+            data = block_map[data_key]
+            for lvl in ["R1", "R2", "R3"]:
+                val = data["r"].get(lvl, "-")
+                if val != "-":
+                    try:
+                        fv = float(val)
+                        pct_err = abs(fv - verify_high) / verify_high
+                        all_r.append((pct_err, data_key, lvl, fv))
+                    except (ValueError, TypeError):
+                        pass
+        if all_r:
+            all_r.sort(key=lambda x: x[0])
+            # 最优：所有与第1名误差相同的值（误差差<0.001视为相同）
+            if all_r[0][0] <= 0.01:
+                best_err = all_r[0][0]
+                if best_err <= 0.01:
+                    for pct, dk, lv, fv in all_r:
+                        if abs(pct - best_err) < 0.001:
+                            if fv <= verify_high:  # 触摸到：预测值≤实际最高价
+                                best_r_global["red"].add((dk, lv))
+                        else:
+                            break
+            # 次优：所有与第2名误差相同的值（在次优组中找并列）
+            if len(all_r) > 1:
+                # 找到第一个不属于最优组的条目
+                second_start = 0
+                best_err = all_r[0][0]
+                for i, (pct, dk, lv, fv) in enumerate(all_r):
+                    if abs(pct - best_err) >= 0.001:
+                        second_start = i
+                        break
+                if second_start > 0 and second_start < len(all_r):
+                    second_err = all_r[second_start][0]
+                    if second_err <= 0.02:
+                        for i in range(second_start, len(all_r)):
+                            pct, dk, lv, fv = all_r[i]
+                            if abs(pct - second_err) < 0.001:
+                                if fv <= verify_high:  # 触摸到
+                                    best_r_global["orange"].add((dk, lv))
+                            else:
+                                break
+
+    if verify_low is not None and verify_low > 0:
+        all_s = []
+        for show_name, data_key in algo_list:
+            data = block_map[data_key]
+            for lvl in ["S1", "S2", "S3"]:
+                val = data["s"].get(lvl, "-")
+                if val != "-":
+                    try:
+                        fv = float(val)
+                        pct_err = abs(fv - verify_low) / verify_low
+                        all_s.append((pct_err, data_key, lvl, fv))
+                    except (ValueError, TypeError):
+                        pass
+        if all_s:
+            all_s.sort(key=lambda x: x[0])
+            # 最优：所有与第1名误差相同的值
+            if all_s[0][0] <= 0.01:
+                best_err = all_s[0][0]
+                if best_err <= 0.01:
+                    for pct, dk, lv, fv in all_s:
+                        if abs(pct - best_err) < 0.001:
+                            if fv <= verify_low:  # 触摸到：预测值≤实际最低价（支撑有效）
+                                best_s_global["green"].add((dk, lv))
+                        else:
+                            break
+            # 次优
+            if len(all_s) > 1:
+                second_start = 0
+                best_err = all_s[0][0]
+                for i, (pct, dk, lv, fv) in enumerate(all_s):
+                    if abs(pct - best_err) >= 0.001:
+                        second_start = i
+                        break
+                if second_start > 0 and second_start < len(all_s):
+                    second_err = all_s[second_start][0]
+                    if second_err <= 0.02:
+                        for i in range(second_start, len(all_s)):
+                            pct, dk, lv, fv = all_s[i]
+                            if abs(pct - second_err) < 0.001:
+                                if fv >= verify_low:  # 触摸到
+                                    best_s_global["yellow"].add((dk, lv))
+                            else:
+                                break
+
     def _copy_cell(text):
         def handler(e):
-            # 移动端使用 SnackBar 提示，桌面端尝试 set_clipboard
             try:
                 page.set_clipboard(str(text))
             except Exception:
@@ -439,8 +622,7 @@ def build_all_in_one_table_card(blocks, page):
             page.update()
         return handler
 
-    def make_cell(text, width, color=None, bold=False, size=13):
-        # 根据文本长度动态调整字体，差距拉大便于肉眼区分
+    def make_cell(text, width, color=None, bold=False, size=13, bg_color=None):
         txt_len = len(str(text))
         if txt_len >= 9:
             adaptive_size = 8
@@ -449,7 +631,7 @@ def build_all_in_one_table_card(blocks, page):
         elif txt_len >= 7:
             adaptive_size = 11
         else:
-            adaptive_size = 13  # 5-6位用13号大字
+            adaptive_size = 13
         txt = ft.Text(
             text, size=adaptive_size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
             color=color, no_wrap=True, selectable=True
@@ -460,7 +642,7 @@ def build_all_in_one_table_card(blocks, page):
             padding=2,
             on_click=_copy_cell(text),
             tooltip="长按选择复制",
-            bgcolor=ft.Colors.TRANSPARENT,
+            bgcolor=bg_color if bg_color else ft.Colors.TRANSPARENT,
         )
 
     def make_row(level_name, is_header=False):
@@ -476,7 +658,20 @@ def build_all_in_one_table_card(blocks, page):
             else:
                 data = block_map[data_key]
                 val = data["pp"] if level_name == "PP" else data["r"].get(level_name, "-") if level_name.startswith("R") else data["s"].get(level_name, "-")
-                cells.append(make_cell(val, 56, size=13))
+                # 全局标色：PP不标，R系列红色/橙色，S系列绿色/黄色
+                bg = None
+                if level_name.startswith("R"):
+                    if (data_key, level_name) in best_r_global["red"]:
+                        bg = ft.Colors.RED_100
+                    elif (data_key, level_name) in best_r_global["orange"]:
+                        bg = ft.Colors.ORANGE_100
+                elif level_name.startswith("S"):
+                    if (data_key, level_name) in best_s_global["green"]:
+                        bg = ft.Colors.GREEN_100
+                    elif (data_key, level_name) in best_s_global["yellow"]:
+                        bg = ft.Colors.YELLOW_100
+                # PP 不标颜色
+                cells.append(make_cell(val, 56, size=13, bg_color=bg))
         return ft.Row(cells, spacing=0)
 
     header = make_row("", is_header=True)
@@ -514,8 +709,8 @@ def _set_name_size(auto_name, stock_name):
 # ==================== 事件处理（async版本） ====================
 
 async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, auto_name, auto_date_text,
-                                     auto_real_date, auto_high, auto_low, auto_close, auto_results,
-                                     calc_btn_auto, source_state, source_label, source_note_text):
+                                     auto_real_date, auto_high, auto_low, auto_close, auto_verify_date,
+                                     auto_results, calc_btn_auto, source_state, source_label, source_note_text):
     code = auto_code.value.strip()
     if not code:
         show_snack(page, "请输入股票代码")
@@ -527,10 +722,6 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
         mode = auto_mode.value
         source = source_state[0]
         weekly = (mode == "按周计算")
-        if weekly:
-            start_day = target_day - timedelta(days=6)
-        else:
-            start_day = target_day
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(None, get_stock_data, code, target_day, source, 2, weekly)
         res = []
@@ -540,39 +731,55 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             auto_high.value = ""
             auto_low.value = ""
             auto_close.value = ""
+            auto_verify_date.value = ""
             auto_name.value = "名称：获取失败"
             source_label.value = ""
-            # 更新数据源提示
-            if weekly and source in ("腾讯", "新浪"):
-                source_note_text.value = "提示：按周计算请使用Baostock数据源"
+            if weekly and source == "腾讯实时":
+                source_note_text.value = "提示：按周计算请使用Baostock或新浪财经数据源"
                 source_note_text.color = ft.Colors.ORANGE_700
             else:
                 source_note_text.value = ""
         else:
-            stock_name, high, low, close, real_day, target_str = data
+            # 新返回格式：(name, calc_h, calc_l, calc_c, calc_date, target_str, verify_h, verify_l, verify_c, verify_date, verify_mode)
+            stock_name, calc_high, calc_low, calc_close, calc_date, target_str, verify_high, verify_low, verify_close, verify_date, verify_mode = data
             auto_name.value = f"名称：{stock_name}"
             _set_name_size(auto_name, stock_name)
-            auto_high.value = f"{high:.3f}"
-            auto_low.value = f"{low:.3f}"
-            auto_close.value = f"{close:.3f}"
+            auto_high.value = f"{verify_high:.3f}"
+            auto_low.value = f"{verify_low:.3f}"
+            auto_close.value = f"{verify_close:.3f}"
             source_label.value = f"来源：{source}"
-            source_note_text.value = ""  # 清除提示
+            source_note_text.value = ""
             if weekly:
-                start_str = start_day.strftime('%m-%d')
-                end_str = target_day.strftime('%m-%d')
-                auto_real_date.value = f"行情周：{start_str} ~ {end_str}"
-            else:
-                real_short = real_day[5:]
-                if real_day == target_str:
-                    auto_real_date.value = f"行情日：{real_short}"
+                auto_real_date.value = f"计算周：{calc_date}"
+                if verify_mode == "next_week":
+                    auto_verify_date.value = f"{verify_date}（下一周）"
+                elif verify_mode == "latest":
+                    auto_verify_date.value = f"{verify_date}（历史最新）"
+                elif verify_mode == "same_day":
+                    auto_verify_date.value = f"{verify_date}（当天）"
                 else:
-                    target_short = target_str[5:]
-                    auto_real_date.value = f"行情日：{real_short}（指定{target_short}）"
-            if high <= 0 or low <= 0 or close <= 0 or high < low or close > high or close < low:
+                    auto_verify_date.value = f"{verify_date}"
+            else:
+                auto_real_date.value = f"计算日：{calc_date}"
+                if verify_mode == "next_day":
+                    auto_verify_date.value = f"{verify_date}（下一交易日）"
+                elif verify_mode == "latest":
+                    auto_verify_date.value = f"{verify_date}（历史最新）"
+                elif verify_mode == "same_day":
+                    auto_verify_date.value = f"{verify_date}（腾讯仅当天）"
+                elif verify_mode == "unsupported":
+                    auto_verify_date.value = f"{verify_date}"
+                else:
+                    auto_verify_date.value = f"{verify_date}"
+            if calc_high <= 0 or calc_low <= 0 or calc_close <= 0 or calc_high < calc_low or calc_close > calc_high or calc_close < calc_low:
                 res = [ft.Text("❌ 行情数值异常", color=ft.Colors.RED, size=12)]
             else:
-                blocks = parse_results(calculate_pivot_points(high, low, close))
-                res = [build_all_in_one_table_card(blocks, page)]
+                blocks = parse_results(calculate_pivot_points(calc_high, calc_low, calc_close))
+                # 腾讯/无下一日数据时不标色（没意义）
+                if verify_mode in ("latest", "same_day", "unsupported"):
+                    res = [build_all_in_one_table_card(blocks, page, None, None, None)]
+                else:
+                    res = [build_all_in_one_table_card(blocks, page, verify_high, verify_low, verify_close)]
         auto_results.controls = res
     except Exception as e:
         auto_results.controls = [ft.Text(f"错误: {e}", color=ft.Colors.RED, size=12)]
@@ -618,7 +825,7 @@ def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "股票枢轴点 V1.1.4"
+    page.title = "股票枢轴点 V1.5"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
@@ -643,7 +850,7 @@ def main(page: ft.Page):
 
     auto_code = ft.TextField(
         label="股票代码", hint_text="如600519",
-        expand=1, value="600519", text_size=13,
+        expand=1, value="159516", text_size=13,
         label_style=ft.TextStyle(size=11), content_padding=8
     )
     auto_mode = ft.Dropdown(
@@ -657,8 +864,12 @@ def main(page: ft.Page):
         selectable=True, weight=ft.FontWeight.BOLD
     )
     auto_real_date = ft.Text(
-        "行情日：待查询", size=11,
+        "计算日：待查询", size=11,
         color=ft.Colors.BLUE_800, selectable=True
+    )
+    auto_verify_date = ft.Text(
+        "", size=11,
+        color=ft.Colors.GREEN_800, weight=ft.FontWeight.BOLD, selectable=True
     )
     auto_name = ft.Text(
         "名称：等待获取...", size=13,
@@ -704,7 +915,7 @@ def main(page: ft.Page):
             refresh_calc_data_async(
                 e, page, auto_code, auto_mode, date_store, auto_name,
                 auto_date_text, auto_real_date, auto_high, auto_low, auto_close,
-                auto_results, calc_btn_auto, source_state, source_label, source_note_text
+                auto_verify_date, auto_results, calc_btn_auto, source_state, source_label, source_note_text
             )
         )
     )
@@ -723,7 +934,7 @@ def main(page: ft.Page):
                 refresh_calc_data_async(
                     None, page, auto_code, auto_mode, date_store, auto_name,
                     auto_date_text, auto_real_date, auto_high, auto_low, auto_close,
-                    auto_results, calc_btn_auto, source_state, source_label, source_note_text
+                    auto_verify_date, auto_results, calc_btn_auto, source_state, source_label, source_note_text
                 )
             )
 
@@ -782,9 +993,12 @@ def main(page: ft.Page):
             ),
         ),
         ft.Card(
-            bgcolor=ft.Colors.WHITE,
+            bgcolor=ft.Colors.GREEN_50,
             content=ft.Container(
-                content=ft.Row([auto_high, auto_low, auto_close], spacing=8),
+                content=ft.Column([
+                    auto_verify_date,
+                    ft.Row([auto_high, auto_low, auto_close], spacing=8),
+                ], spacing=4),
                 padding=8
             ),
         ),
