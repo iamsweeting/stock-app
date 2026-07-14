@@ -20,9 +20,9 @@
 #   新浪 (Sina)      : A股前复权历史行情，支持按日/按周
 #
 # 【枢轴点算法】
-#   经典   : PP=(H+L+C)/3; R1=2PP-H; S1=2PP-L; R2=PP+(H-L); S2=PP-(H-L)
-#   斐波那契: PP=(H+L+C)/3; R1=PP+0.382*(H-L); S1=PP-0.382*(H-L); R2=PP+0.618*(H-L); S2=PP-0.618*(H-L)
-#   卡玛利亚: PP=(H+L+C)/3; R1=C+(H-L)/12; S1=C-(H-L)/12; R2=C+(H-L)/6; S2=C-(H-L)/6
+#   经典   : PP=(H+L+C)/3; R1=2PP-H; S1=2PP-L; R2=PP+(H-L); S2=PP-(H-L); R3=R2+(H-L); S3=S2-(H-L)
+#   斐波那契: PP=(H+L+C)/3; R1=PP+0.382*(H-L); S1=PP-0.382*(H-L); R2=PP+0.618*(H-L); S2=PP-0.618*(H-L); R3=PP+1.0*(H-L); S3=PP-1.0*(H-L)
+#   卡玛利亚: PP=(H+L+C)/3; R1=C+(H-L)/12; S1=C-(H-L)/12; R2=C+(H-L)/6; S2=C-(H-L)/6; R3=C+(H-L)/4; S3=C-(H-L)/4; R4=C+(H-L)/2; S4=C-(H-L)/2
 #   伍迪   : PP=(H+L+2C)/4; R1=2PP-H; S1=2PP-L; R2=PP+(H-L); S2=PP-(H-L)
 #   迪马克  : PP=(H+L+2C)/4; R1=PP+(H-L)/2; S1=PP-(H-L)/2
 #
@@ -31,18 +31,23 @@
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
-# V2.0  2026-07-14  版本升级：单股→批量处理；新增算法选择；
-#                    输出格式改为表格化；移除历史记忆功能。
-#                    修复 Flet 0.85+ API 兼容性：alignment.center、ElevatedButton。
-# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口。
-# V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口。
-# V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据。
+# V2.0  2026-07-14  基于V1.1.2稳定架构升级：单股→批量处理；新增算法选择；
+#                    输出格式改为表格化（代码/名称/PP/R1/S1/R2/S2/R3/S3/R4/S4）。
+#                    恢复asyncio.run_in_executor（V1.1.2证明Windows下稳定）。
+#                    去掉session复用，恢复get()直接请求（避免连接池问题）。
+#                    延迟导入pandas，优化启动速度。
+#                    try...finally确保按钮必恢复。
+# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
+#                    复权说明补充ETF基金份额折算机制说明。
+# V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
+#                    复权说明补充ETF基金注意事项；顶部注释完善。
+# V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据；
+#                   新增复权说明；修复日期选择器时区偏移；增大表格字体。
 # ==============================================================================
 import flet as ft
 from datetime import datetime, timedelta
 import asyncio
 import time
-import pandas as pd
 import requests
 from requests import get
 from requests.exceptions import RequestException, ConnectionError, Timeout
@@ -58,7 +63,7 @@ _sina_cache_time = {}
 _CACHE_TTL = 300
 
 
-# ==================== 行情数据获取 ====================
+# ==================== 行情数据获取（与V1.1.2完全一致） ====================
 
 def _ensure_baostock_login():
     global _baostock_logged_in
@@ -97,6 +102,8 @@ def _get_baostock_name(bs_code):
 
 def _get_baostock_data(stock_code, target_date, weekly=False):
     import baostock as bs
+    import pandas as pd
+
     if not _ensure_baostock_login():
         return {"err": "login", "msg": "Baostock登录失败，请检查网络"}
     code = stock_code.strip()
@@ -158,6 +165,7 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
 
 def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
     """新浪财经K线接口，返回前复权日线数据"""
+    import pandas as pd
     code = stock_code.strip()
     if code.startswith(("5", "6")):
         sina_code = f"sh{code}"
@@ -294,34 +302,42 @@ def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False)
 # ==================== 枢轴点计算（单算法） ====================
 
 def calculate_single_pivot(high, low, close, algorithm="经典"):
-    """
-    根据指定算法计算枢轴点
-    返回: {"pp": float, "r1": float, "s1": float, "r2": float, "s2": float}
-    """
     if algorithm == "经典":
         pp = (high + low + close) / 3
         r1 = (2 * pp) - high
         s1 = (2 * pp) - low
         r2 = pp + (high - low)
         s2 = pp - (high - low)
+        r3 = r2 + (high - low)
+        s3 = s2 - (high - low)
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": "-", "s4": "-"}
     elif algorithm == "斐波那契":
         pp = (high + low + close) / 3
         r1 = pp + (high - low) * 0.382
         s1 = pp - (high - low) * 0.382
         r2 = pp + (high - low) * 0.618
         s2 = pp - (high - low) * 0.618
+        r3 = pp + (high - low) * 1.0
+        s3 = pp - (high - low) * 1.0
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": "-", "s4": "-"}
     elif algorithm == "卡玛利亚":
         pp = (high + low + close) / 3
         r1 = close + (high - low) / 12
         s1 = close - (high - low) / 12
         r2 = close + (high - low) / 6
         s2 = close - (high - low) / 6
+        r3 = close + (high - low) / 4
+        s3 = close - (high - low) / 4
+        r4 = close + (high - low) / 2
+        s4 = close - (high - low) / 2
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": round(r4, 3), "s4": round(s4, 3)}
     elif algorithm == "伍迪":
         pp = (high + low + 2 * close) / 4
         r1 = (2 * pp) - high
         s1 = (2 * pp) - low
         r2 = pp + (high - low)
         s2 = pp - (high - low)
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
     elif algorithm == "迪马克":
         if close < low:
             x = high + 2 * low + close
@@ -334,36 +350,28 @@ def calculate_single_pivot(high, low, close, algorithm="经典"):
         s1 = x / 2 - high
         r2 = pp + (high - low) / 2
         s2 = pp - (high - low) / 2
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
     else:
         pp = (high + low + close) / 3
         r1 = (2 * pp) - high
         s1 = (2 * pp) - low
         r2 = pp + (high - low)
         s2 = pp - (high - low)
-    return {
-        "pp": round(pp, 3),
-        "r1": round(r1, 3),
-        "s1": round(s1, 3),
-        "r2": round(r2, 3),
-        "s2": round(s2, 3),
-    }
+        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
 
 
 # ==================== 代码解析 ====================
 
 def parse_stock_codes(text):
-    """解析股票代码，支持逗号/分号（中英文）、空格、换行分隔"""
     if not text:
         return []
-    # 统一中英文分号、逗号、换行 -> 空格
-    unified = text.replace('；', ' ').replace(';', ' ').replace('，', ' ').replace(',', ' ').replace('\n', ' ').replace('\t', ' ')
+    unified = text.replace('；', ' ').replace(';', ' ').replace('，', ' ').replace(',', ' ').replace('\n', ' ').replace('\t', ' ').replace('\r', ' ')
     parts = unified.split()
     codes = []
     for p in parts:
         c = p.strip()
         if c and c.isdigit() and 4 <= len(c) <= 8:
             codes.append(c)
-    # 去重，保持顺序
     seen = set()
     result = []
     for c in codes:
@@ -373,12 +381,46 @@ def parse_stock_codes(text):
     return result
 
 
+# ==================== 名称截断工具 ====================
+
+def truncate_name(name, max_chars=6):
+    if len(name) <= max_chars:
+        return name
+    return name[:max_chars - 1] + "…"
+
+
+def get_name_font_size(name):
+    ln = len(name)
+    if ln >= 6:
+        return 9
+    elif ln >= 5:
+        return 10
+    elif ln >= 4:
+        return 11
+    else:
+        return 12
+
+
 # ==================== 批量结果表格构建 ====================
 
 def build_batch_result_table(results, page, algorithm):
     r_color = ft.Colors.RED_400
     s_color = ft.Colors.GREEN_400
     pp_color = ft.Colors.BLUE_700
+
+    columns = [
+        ("代码", 48, None, True),
+        ("名称", 64, None, True),
+        ("PP", 48, pp_color, True),
+        ("R1", 48, r_color, True),
+        ("S1", 48, s_color, True),
+        ("R2", 48, r_color, True),
+        ("S2", 48, s_color, True),
+        ("R3", 48, r_color, True),
+        ("S3", 48, s_color, True),
+        ("R4", 48, r_color, True),
+        ("S4", 48, s_color, True),
+    ]
 
     def _copy_cell(text):
         def handler(e):
@@ -391,74 +433,91 @@ def build_batch_result_table(results, page, algorithm):
             page.update()
         return handler
 
-    def make_cell(text, width, color=None, bold=False, size=12):
+    def _copy_row(row_text):
+        def handler(e):
+            try:
+                page.set_clipboard(str(row_text))
+            except Exception:
+                pass
+            page.snack_bar = ft.SnackBar(ft.Text("已复制整行数据", size=12))
+            page.snack_bar.open = True
+            page.update()
+        return handler
+
+    def make_cell(text, width, color=None, bold=False, size=11):
         txt_len = len(str(text))
         if txt_len >= 9:
             adaptive_size = 8
         elif txt_len >= 8:
-            adaptive_size = 10
+            adaptive_size = 9
         elif txt_len >= 7:
-            adaptive_size = 11
+            adaptive_size = 10
         else:
-            adaptive_size = 13
+            adaptive_size = size
         txt = ft.Text(
             text, size=adaptive_size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
-            color=color, no_wrap=True, selectable=True, text_align=ft.TextAlign.CENTER
+            color=color, no_wrap=True, selectable=True, text_align=ft.TextAlign.CENTER,
+            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS
         )
         return ft.Container(
-            content=txt, width=width, padding=2,
-            on_click=_copy_cell(text), tooltip="长按选择复制",
+            content=txt, width=width, padding=1,
+            on_click=_copy_cell(text), tooltip="点击复制单元格",
             bgcolor=ft.Colors.TRANSPARENT
         )
 
-    # 表头
-    header_cells = [
-        make_cell("序号", 36, size=11, bold=True),
-        make_cell("代码", 56, size=11, bold=True),
-        make_cell("名称", 72, size=11, bold=True),
-        make_cell("PP", 60, size=11, bold=True, color=pp_color),
-        make_cell("R1", 60, size=11, bold=True, color=r_color),
-        make_cell("S1", 60, size=11, bold=True, color=s_color),
-        make_cell("R2", 60, size=11, bold=True, color=r_color),
-        make_cell("S2", 60, size=11, bold=True, color=s_color),
-    ]
+    header_cells = [make_cell(title, width, color, bold, 10) for title, width, color, bold in columns]
     header_row = ft.Row(header_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER)
     rows = [header_row, ft.Divider(height=1, color=ft.Colors.GREY_400)]
 
     for r in results:
         if r.get("status") == "error":
+            name_text = truncate_name(r.get("name", "获取失败"), 6)
+            name_size = get_name_font_size(name_text)
             err_cells = [
-                make_cell(str(r["idx"]), 36, size=11),
-                make_cell(r["code"], 56, size=11),
-                make_cell(r.get("name", "获取失败")[:8], 72, size=11, color=ft.Colors.GREY_500),
-                make_cell("-", 60, size=11, color=ft.Colors.GREY_400),
-                make_cell("-", 60, size=11, color=ft.Colors.GREY_400),
-                make_cell("-", 60, size=11, color=ft.Colors.GREY_400),
-                make_cell("-", 60, size=11, color=ft.Colors.GREY_400),
-                make_cell("-", 60, size=11, color=ft.Colors.GREY_400),
+                make_cell(r["code"], 48, size=10),
+                make_cell(name_text, 64, size=name_size, color=ft.Colors.GREY_500),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
+                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
             ]
-            row = ft.Row(err_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER)
-            rows.append(ft.Container(content=row, bgcolor=ft.Colors.GREY_50))
+            row_container = ft.Container(content=ft.Row(err_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER), bgcolor=ft.Colors.GREY_50)
+            rows.append(row_container)
         else:
-            name_display = r["name"][:8] if len(r["name"]) <= 8 else r["name"][:7] + "…"
+            raw_name = r["name"]
+            name_text = truncate_name(raw_name, 6)
+            name_size = get_name_font_size(raw_name)
             data_cells = [
-                make_cell(str(r["idx"]), 36, size=11),
-                make_cell(r["code"], 56, size=11),
-                make_cell(name_display, 72, size=12, bold=True),
-                make_cell(str(r["pp"]), 60, size=13, color=pp_color),
-                make_cell(str(r["r1"]), 60, size=13, color=r_color),
-                make_cell(str(r["s1"]), 60, size=13, color=s_color),
-                make_cell(str(r["r2"]), 60, size=13, color=r_color),
-                make_cell(str(r["s2"]), 60, size=13, color=s_color),
+                make_cell(r["code"], 48, size=10),
+                make_cell(name_text, 64, size=name_size, bold=True),
+                make_cell(str(r["pp"]), 48, size=11, color=pp_color),
+                make_cell(str(r["r1"]), 48, size=11, color=r_color),
+                make_cell(str(r["s1"]), 48, size=11, color=s_color),
+                make_cell(str(r["r2"]), 48, size=11, color=r_color),
+                make_cell(str(r["s2"]), 48, size=11, color=s_color),
+                make_cell(str(r["r3"]), 48, size=11, color=r_color),
+                make_cell(str(r["s3"]), 48, size=11, color=s_color),
+                make_cell(str(r["r4"]), 48, size=11, color=r_color),
+                make_cell(str(r["s4"]), 48, size=11, color=s_color),
             ]
-            row = ft.Row(data_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER)
-            rows.append(row)
+            row_copy_text = f"{r['code']}\t{raw_name}\t{r['pp']}\t{r['r1']}\t{r['s1']}\t{r['r2']}\t{r['s2']}\t{r['r3']}\t{r['s3']}\t{r['r4']}\t{r['s4']}"
+            row_container = ft.Container(
+                content=ft.Row(data_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER),
+                on_click=_copy_row(row_copy_text),
+                tooltip="点击复制整行（制表符分隔）"
+            )
+            rows.append(row_container)
         rows.append(ft.Divider(height=1, color=ft.Colors.GREY_200))
 
     table_col = ft.Column(rows, spacing=0, tight=True)
     return ft.Container(
         content=ft.Row([table_col], scroll=ft.ScrollMode.AUTO),
-        padding=4,
+        padding=2,
     )
 
 
@@ -470,7 +529,7 @@ def show_snack(page, message):
     page.update()
 
 
-# ==================== 批量计算事件 ====================
+# ==================== 批量计算事件（与V1.1.2完全一致的async模式） ====================
 
 async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_state,
                            algo_dropdown, result_area, calc_btn, source_label,
@@ -487,78 +546,77 @@ async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_st
     calc_btn.disabled = True
     page.update()
 
-    target_day = date_store[0]
-    mode = auto_mode.value
-    source = source_state[0]
-    algorithm = algo_dropdown.value
-    weekly = (mode == "按周计算")
+    try:
+        target_day = date_store[0]
+        mode = auto_mode.value
+        source = source_state[0]
+        algorithm = algo_dropdown.value
+        weekly = (mode == "按周计算")
 
-    if weekly and source == "腾讯实时":
-        source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至Baostock或新浪财经"
-        source_note_text.color = ft.Colors.ORANGE_700
-        calc_btn.disabled = False
-        page.update()
-        return
-    else:
-        source_note_text.value = ""
+        if weekly and source == "腾讯实时":
+            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至Baostock或新浪财经"
+            source_note_text.color = ft.Colors.ORANGE_700
+            return
+        else:
+            source_note_text.value = ""
 
-    results = []
-    total = len(codes)
-    loop = asyncio.get_event_loop()
+        results = []
+        total = len(codes)
+        loop = asyncio.get_event_loop()
 
-    for i, code in enumerate(codes, 1):
-        status_text.value = f"处理中 {i}/{total}：{code}"
-        page.update()
-        try:
-            data = await loop.run_in_executor(None, get_stock_data, code, target_day, source, 2, weekly)
-            if isinstance(data, dict) and "err" in data:
-                results.append({
-                    "idx": i, "code": code, "name": data.get("msg", "获取失败"),
-                    "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-",
-                    "status": "error"
-                })
-            else:
-                stock_name, high, low, close, real_day, target_str = data
-                if high <= 0 or low <= 0 or close <= 0 or high < low or close > high or close < low:
+        for i, code in enumerate(codes, 1):
+            status_text.value = f"处理中 {i}/{total}：{code}"
+            page.update()
+            try:
+                data = await loop.run_in_executor(None, get_stock_data, code, target_day, source, 2, weekly)
+                if isinstance(data, dict) and "err" in data:
                     results.append({
-                        "idx": i, "code": code, "name": "数值异常",
-                        "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-",
+                        "idx": i, "code": code, "name": data.get("msg", "获取失败"),
+                        "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-",
                         "status": "error"
                     })
                 else:
-                    pivot = calculate_single_pivot(high, low, close, algorithm)
-                    results.append({
-                        "idx": i, "code": code, "name": stock_name,
-                        "pp": pivot["pp"], "r1": pivot["r1"], "s1": pivot["s1"],
-                        "r2": pivot["r2"], "s2": pivot["s2"], "status": "ok"
-                    })
-        except Exception as e:
-            results.append({
-                "idx": i, "code": code, "name": f"异常：{str(e)[:20]}",
-                "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-",
-                "status": "error"
-            })
-        # 请求间隔，避免限流
-        await asyncio.sleep(0.5)
+                    stock_name, high, low, close, real_day, target_str = data
+                    if high <= 0 or low <= 0 or close <= 0 or high < low or close > high or close < low:
+                        results.append({
+                            "idx": i, "code": code, "name": "数值异常",
+                            "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-",
+                            "status": "error"
+                        })
+                    else:
+                        pivot = calculate_single_pivot(high, low, close, algorithm)
+                        results.append({
+                            "idx": i, "code": code, "name": stock_name,
+                            "pp": pivot["pp"], "r1": pivot["r1"], "s1": pivot["s1"],
+                            "r2": pivot["r2"], "s2": pivot["s2"], "r3": pivot["r3"], "s3": pivot["s3"],
+                            "r4": pivot["r4"], "s4": pivot["s4"], "status": "ok"
+                        })
+            except Exception as e:
+                results.append({
+                    "idx": i, "code": code, "name": f"异常：{str(e)[:20]}",
+                    "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-",
+                    "status": "error"
+                })
+            await asyncio.sleep(0.3)
 
-    # 构建结果表格
-    result_table = build_batch_result_table(results, page, algorithm)
-    ok_count = sum(1 for r in results if r["status"] == "ok")
-    err_count = total - ok_count
+        # 构建结果表格
+        result_table = build_batch_result_table(results, page, algorithm)
+        ok_count = sum(1 for r in results if r["status"] == "ok")
+        err_count = total - ok_count
 
-    # 清空旧结果并设置新结果
-    result_area.controls.clear()
-    result_area.controls.append(
-        ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700)
-    )
-    result_area.controls.append(result_table)
+        result_area.controls = [
+            ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+            result_table,
+        ]
+        source_label.value = f"来源：{source} | 算法：{algorithm} | 模式：{mode}"
+        status_text.value = f"就绪 | 共 {total} 条"
 
-    source_label.value = f"来源：{source} | 算法：{algorithm} | 模式：{mode}"
-    status_text.value = f"就绪 | 共 {total} 条"
-    calc_btn.disabled = False
-
-    # 强制刷新页面
-    page.update()
+    except Exception as e:
+        show_snack(page, f"计算出错：{str(e)}")
+    finally:
+        # 无论成功失败，按钮必恢复
+        calc_btn.disabled = False
+        page.update()
 
 
 def date_change_event(e, page, auto_date_text, date_store):
@@ -668,7 +726,7 @@ def main(page: ft.Page):
         date_picker.open = True
         page.update()
 
-    # ===== 计算按钮：使用 ft.Button 替代已弃用的 ElevatedButton =====
+    # ===== 计算按钮 =====
     calc_btn = ft.Button(
         "计算",
         icon=ft.Icons.CALCULATE,
