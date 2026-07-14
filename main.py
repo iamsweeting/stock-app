@@ -1,1150 +1,527 @@
-# ==============================================================================
-# 股票枢轴点批量计算器 BatchStock V2.5
-# ==============================================================================
-# 【功能说明】
-#   输入多个股票代码（逗号/分号/空格/换行隔开），选择日期与数据源，
-#   自动计算指定枢轴点算法，批量输出结果表格。
-#   支持五种枢轴点算法：经典、斐波那契、卡玛利亚、伍迪、迪马克。
-#   支持按日/按周计算，支持A股历史行情。
-#
-# 【复权说明】
-#   Bao 使用 adjustflag=2 前复权，新浪接口返回前复权数据。
-#   股票的分红、拆股、配股等除权除息，复权价格保持历史连续性。
-#   腾讯实时数据为当前复权价。
-#   【ETF基金特别说明】ETF（如159516）存在份额折算/合并机制，
-#   对ETF份额折算的复权支持有限，可能导致折算前后价格不连续。
-#
-# 【行情数据源】
-#   新浪 (Sina)      : A股前复权历史行情，支持按日/按周，无需登录，响应快
-#   Bao (Baostock)  : A股前复权历史日线，免费稳定，支持按日/按周，需登录
-#   腾讯 (Tencent)  : A股当日复权行情，非交易日显示最近收盘数据，仅支持按日
-#
-# 【枢轴点算法】
-#   经典   : PP=(H+L+C)/3; R1=2PP-L; S1=2PP-H; R2=PP+(H-L); S2=PP-(H-L); R3=R2+(H-L); S3=S2-(H-L)
-#   斐波那契: PP=(H+L+C)/3; R1=PP+0.382*(H-L); S1=PP-0.382*(H-L); R2=PP+0.618*(H-L); S2=PP-0.618*(H-L); R3=PP+1.0*(H-L); S3=PP-1.0*(H-L)
-#   卡玛利亚: PP=(H+L+C)/3; R1=C+(H-L)/12; S1=C-(H-L)/12; R2=C+(H-L)/6; S2=C-(H-L)/6; R3=C+(H-L)/4; S3=C-(H-L)/4; R4=C+(H-L)/2; S4=C-(H-L)/2
-#   伍迪   : PP=(H+L+2C)/4; R1=2PP-L; S1=2PP-H; R2=PP+(H-L); S2=PP-(H-L)
-#   迪马克  : PP=(H+L+2C)/4; R1=PP+(H-L)/2; S1=PP-(H-L)/2  （仅PP/R1/S1三个值）
-#
-# 【开发环境】Python 3.10+ / Flet 0.80+
-# 【打包支持】Windows本地运行 + Android APK打包
-# 【依赖库】flet, pandas, requests, baostock
-# ==============================================================================
-# 【修改记录】
-# V2.5  2026-07-14  复制功能优化：复制内容增加标题行（表头）；
-#                    手动复制框增加"×"关闭按钮，避免堆积；
-#                    Android提示语改为"长按文本框全选后复制"；
-#                    每次点击"复制全部"先清除旧的手动复制框。
-# V2.4  2026-07-14  修复Windows复制为空：明确声明ctypes函数原型（64位指针不截断）；
-#                    增加tkinter fallback（Python标准库，跨线程安全）；
-#                    复制失败时弹出文本框供手动复制。
-# V2.3  2026-07-14  修复新浪数据源名称：新增腾讯接口获取名称，新浪不再返回代码作为名称。
-#                    修复Windows中文乱码：改用ctypes调用Win32 API（SetClipboardData/CF_UNICODETEXT）。
-# V2.2  2026-07-14  修复复制功能：Windows下使用PowerShell Set-Clipboard解决UTF-8乱码；
-#                    Android下强制使用Flet原生set_clipboard，避免subprocess不可用。
-# V2.1  2026-07-14  修复迪马克算法：去掉多余的R2/S2，仅保留PP/R1/S1。
-#                    调整数据源顺序：新浪优先（无需登录，响应快），Bao次之。
-# V2.0  2026-07-14  基于V1.1.2稳定架构升级：单股→批量处理；新增算法选择；
-#                    输出格式改为表格化（代码/名称/PP/R1/S1/R2/S2/R3/S3/R4/S4）。
-# V1.1.2 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口。
-# V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口。
-# V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据。
-# ==============================================================================
 import flet as ft
 from datetime import datetime, timedelta
-import asyncio
-import time
-import requests
-from requests import get
-from requests.exceptions import RequestException, ConnectionError, Timeout
+import threading
 import re
-import sys
-import os
-import tempfile
-import subprocess
+# 静态显式导入requests全套依赖，防止打包裁剪，不用改yml
+import requests
+from requests import get, Session
+from requests.exceptions import RequestException, ConnectionError, Timeout
+import urllib3
+import certifi
+import charset_normalizer
+import idna
 
-# ========== 平台检测 ==========
-_PLATFORM = sys.platform
-_IS_ANDROID = False
-try:
-    if 'ANDROID_ROOT' in os.environ or 'ANDROID_DATA' in os.environ:
-        _IS_ANDROID = True
-    elif _PLATFORM.startswith('linux') and not os.path.exists('/proc/version'):
-        _IS_ANDROID = True
-except Exception:
-    pass
-
-_SUBPROCESS_AVAILABLE = True
-try:
-    if _PLATFORM == 'win32':
-        subprocess.run(['cmd', '/c', 'echo', 'test'], capture_output=True, timeout=2)
-    else:
-        subprocess.run(['echo', 'test'], capture_output=True, timeout=2)
-except Exception:
-    _SUBPROCESS_AVAILABLE = False
-    _IS_ANDROID = True
-
-# ========== Windows 剪贴板：ctypes Win32 API（明确声明原型，64位安全） ==========
-_WIN_CLIPBOARD_AVAILABLE = False
-if _PLATFORM == 'win32' and not _IS_ANDROID:
+# 行情函数：四个数据源全部完整联网查询，默认腾讯
+def get_stock_data(stock_code, target_date, source="腾讯财经"):
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-
-        GlobalAlloc = kernel32.GlobalAlloc
-        GlobalAlloc.argtypes = [wintypes.UINT, wintypes.SIZE_T]
-        GlobalAlloc.restype = wintypes.HGLOBAL
-
-        GlobalLock = kernel32.GlobalLock
-        GlobalLock.argtypes = [wintypes.HGLOBAL]
-        GlobalLock.restype = wintypes.LPVOID
-
-        GlobalUnlock = kernel32.GlobalUnlock
-        GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-        GlobalUnlock.restype = wintypes.BOOL
-
-        OpenClipboard = user32.OpenClipboard
-        OpenClipboard.argtypes = [wintypes.HWND]
-        OpenClipboard.restype = wintypes.BOOL
-
-        EmptyClipboard = user32.EmptyClipboard
-        EmptyClipboard.restype = wintypes.BOOL
-
-        SetClipboardData = user32.SetClipboardData
-        SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-        SetClipboardData.restype = wintypes.HANDLE
-
-        CloseClipboard = user32.CloseClipboard
-        CloseClipboard.restype = wintypes.BOOL
-
-        _WIN_CLIPBOARD_AVAILABLE = True
-    except Exception:
-        pass
-
-# Baostock 懒登录状态
-_baostock_logged_in = False
-_baostock_name_cache = {}
-
-# 新浪 简单缓存
-_sina_cache = {}
-_sina_cache_time = {}
-_CACHE_TTL = 300
-
-# 名称缓存（跨数据源共享）
-_name_cache = {}
-
-
-# ==================== 跨平台剪贴板复制 ====================
-
-def _win32_set_clipboard(text):
-    """Windows: ctypes调用Win32 API，明确声明原型，64位指针安全"""
-    if not _WIN_CLIPBOARD_AVAILABLE:
-        return False
-    try:
-        import ctypes
-
-        CF_UNICODETEXT = 13
-        GMEM_MOVEABLE = 0x0002
-
-        text_bytes = (text + '\0').encode('utf-16le')
-        size = len(text_bytes)
-
-        h_mem = GlobalAlloc(GMEM_MOVEABLE, size)
-        if not h_mem:
-            return False
-
-        ptr = GlobalLock(h_mem)
-        if not ptr:
-            return False
-        ctypes.memmove(ptr, text_bytes, size)
-        GlobalUnlock(h_mem)
-
-        if not OpenClipboard(None):
-            return False
-        EmptyClipboard()
-        SetClipboardData(CF_UNICODETEXT, h_mem)
-        CloseClipboard()
-
-        return True
-    except Exception:
-        return False
-
-
-def _tkinter_set_clipboard(text):
-    """跨平台：使用tkinter（Python标准库），跨线程安全"""
-    try:
-        import tkinter as tk
-        r = tk.Tk()
-        r.withdraw()
-        r.clipboard_clear()
-        r.clipboard_append(text)
-        r.update()
-        r.destroy()
-        return True
-    except Exception:
-        return False
-
-
-def copy_to_clipboard(text, page=None):
-    """
-    跨平台复制到剪贴板，多策略fallback确保可靠性。
-    Android: 必须使用 Flet page.set_clipboard
-    Windows: ctypes Win32 API → tkinter → Flet API
-    Linux/Mac: xclip/pbcopy → tkinter → Flet API
-    """
-    if _IS_ANDROID or not _SUBPROCESS_AVAILABLE:
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception as e:
-                if page is not None:
-                    page.snack_bar = ft.SnackBar(ft.Text(f"复制失败：{str(e)[:30]}", size=12))
-                    page.snack_bar.open = True
-                    page.update()
-                return False
-        return False
-
-    if _PLATFORM == 'win32':
-        if _win32_set_clipboard(text):
-            return True
-        if _tkinter_set_clipboard(text):
-            return True
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
-    elif _PLATFORM == 'darwin':
-        try:
-            subprocess.run(['pbcopy'], input=text.encode('utf-8'), check=True, timeout=5)
-            return True
-        except Exception:
-            pass
-        if _tkinter_set_clipboard(text):
-            return True
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
-    else:
-        try:
-            subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode('utf-8'), check=True, timeout=5)
-            return True
-        except Exception:
-            pass
-        if _tkinter_set_clipboard(text):
-            return True
-        if page is not None:
-            try:
-                page.set_clipboard(text)
-                return True
-            except Exception:
-                pass
-        return False
-
-
-# ==================== 名称获取（腾讯接口，快速） ====================
-
-def _get_stock_name_from_tencent(stock_code):
-    """用腾讯接口获取股票名称，用于补充新浪数据源"""
-    if stock_code in _name_cache:
-        return _name_cache[stock_code]
-
-    code = stock_code.strip()
-    if code.startswith(("5", "6")):
-        prefix = "sh"
-    elif code.startswith(("0", "1", "3")):
-        prefix = "sz"
-    else:
-        return code
-
-    try:
-        url = f"https://qt.gtimg.cn/q={prefix}{code}"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Connection': 'close',
+            'Connection': 'close'
         }
-        resp = get(url, headers=headers, timeout=8)
-        text = resp.text
-        if '~' in text:
-            parts = text.split('~')
-            if len(parts) > 2:
-                name = parts[1]
-                _name_cache[stock_code] = name
-                return name
-    except Exception:
-        pass
-    return code
-
-
-# ==================== 行情数据获取 ====================
-
-def _ensure_baostock_login():
-    global _baostock_logged_in
-    if not _baostock_logged_in:
-        try:
-            import baostock as bs
-            lg = bs.login()
-            if lg.error_code == '0':
-                _baostock_logged_in = True
-                return True
-            else:
-                return False
-        except Exception:
-            return False
-    return True
-
-
-def _get_baostock_name(bs_code):
-    if bs_code in _baostock_name_cache:
-        return _baostock_name_cache[bs_code]
-    try:
-        import baostock as bs
-        if not _ensure_baostock_login():
-            return bs_code
-        rs = bs.query_stock_basic(code=bs_code)
-        if rs.error_code == '0' and rs.next():
-            row = rs.get_row_data()
-            if len(row) > 1 and row[1]:
-                name = row[1]
-                _baostock_name_cache[bs_code] = name
-                _name_cache[bs_code.split('.')[-1]] = name
-                return name
-    except Exception:
-        pass
-    return bs_code
-
-
-def _get_baostock_data(stock_code, target_date, weekly=False):
-    import baostock as bs
-    import pandas as pd
-
-    if not _ensure_baostock_login():
-        return {"err": "login", "msg": "Baostock登录失败，请检查网络"}
-    code = stock_code.strip()
-    if code.startswith(("5", "6")):
-        bs_code = f"sh.{code}"
-    elif code.startswith(("0", "1", "3")):
-        bs_code = f"sz.{code}"
-    else:
-        return {"err": "code", "msg": "Baostock仅支持0/1/3/5/6开头A股代码"}
-    target_str = target_date.strftime('%Y-%m-%d')
-    if weekly:
-        start = (target_date - timedelta(days=20)).strftime('%Y-%m-%d')
-    else:
-        start = (target_date - timedelta(days=10)).strftime('%Y-%m-%d')
-    end = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
-    try:
-        rs = bs.query_history_k_data_plus(
-            bs_code, "date,open,high,low,close,volume",
-            start_date=start, end_date=end, frequency="d", adjustflag="2"
-        )
-        if rs.error_code != '0':
-            return {"err": "api", "msg": f"Baostock接口错误：{rs.error_msg}"}
-        data_list = []
-        while rs.next():
-            data_list.append(rs.get_row_data())
-        if not data_list:
-            return {"err": "empty", "msg": f"Baostock：{target_str} 无数据"}
-        df = pd.DataFrame(data_list, columns=rs.fields)
-        df['date'] = pd.to_datetime(df['date'])
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        if weekly:
-            week_start = target_date - timedelta(days=6)
-            week_mask = (df['date'].dt.date >= week_start) & (df['date'].dt.date <= target_date)
-            week_df = df[week_mask]
-            if week_df.empty:
-                return {"err": "empty", "msg": f"Baostock：{target_str} 前6天无数据"}
-            high = float(week_df['high'].max())
-            low = float(week_df['low'].min())
-            close_row = df[df['date'].dt.date <= target_date].iloc[-1]
-            close = float(close_row['close'])
-            real_day = close_row['date'].strftime('%Y-%m-%d')
-            return (_get_baostock_name(bs_code), high, low, close, real_day, target_str)
-        mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
-        if mask.any():
-            row = df[mask].iloc[-1]
-            real_day = target_str
+        date_str = target_date.strftime('%Y%m%d')
+        date_show = target_date.strftime('%Y-%m-%d')
+        # 区分沪市/深市，兼容ETF 5/6沪，0/1深
+        if stock_code.startswith(("5", "6")):
+            prefix = "sh"
+            market_flag = "1"
+        elif stock_code.startswith(("0", "1")):
+            prefix = "sz"
+            market_flag = "0"
         else:
-            valid = df[df['date'].dt.date <= target_date]
-            if valid.empty:
-                return {"err": "empty", "msg": f"Baostock：{target_str} 及之前无有效数据"}
-            row = valid.iloc[-1]
-            real_day = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
-        return (_get_baostock_name(bs_code), float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
-    except Exception as e:
-        return {"err": "other", "msg": f"Baostock异常：{str(e)}"}
+            return None
 
-
-def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
-    """新浪财经K线接口，返回前复权日线数据。名称通过腾讯接口补充。"""
-    import pandas as pd
-    code = stock_code.strip()
-    if code.startswith(("5", "6")):
-        sina_code = f"sh{code}"
-    elif code.startswith(("0", "1", "3")):
-        sina_code = f"sz{code}"
-    else:
-        return {"err": "code", "msg": "新浪仅支持0/1/3/5/6开头A股代码"}
-
-    target_str = target_date.strftime('%Y-%m-%d')
-    if weekly:
-        datalen = 300
-    else:
-        datalen = 150
-
-    for attempt in range(retry + 1):
-        try:
-            if attempt > 0:
-                time.sleep(1.0)
-            url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen={datalen}"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://finance.sina.com.cn/',
-            }
-            resp = get(url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                if attempt < retry:
-                    continue
-                return {"err": "http", "msg": f"新浪：HTTP {resp.status_code}"}
+        # 东方财富日线
+        if source == "东方财富":
+            url = f"https://push2.eastmoney.com/api/qt/stock/kline/get?secid={market_flag}.{stock_code}&kltype=1&beg={date_str}&end={date_str}&fqt=0"
+            resp = get(url, headers=headers, timeout=12)
             data = resp.json()
-            if not data or not isinstance(data, list) or len(data) == 0:
-                if attempt < retry:
-                    continue
-                return {"err": "empty", "msg": f"新浪：未找到 {code} 数据"}
-            records = []
-            for item in data:
-                if isinstance(item, dict):
-                    records.append({
-                        'date': item.get('day', ''),
-                        'open': float(item.get('open', 0)),
-                        'close': float(item.get('close', 0)),
-                        'high': float(item.get('high', 0)),
-                        'low': float(item.get('low', 0)),
-                        'volume': float(item.get('volume', 0)),
-                    })
-            if not records:
-                if attempt < retry:
-                    continue
-                return {"err": "empty", "msg": f"新浪：{target_str} 无数据"}
-            df = pd.DataFrame(records)
-            df['date'] = pd.to_datetime(df['date'])
-            if weekly:
-                week_start = target_date - timedelta(days=6)
-                week_mask = (df['date'].dt.date >= week_start) & (df['date'].dt.date <= target_date)
-                week_df = df[week_mask]
-                if week_df.empty:
-                    if attempt < retry:
-                        continue
-                    return {"err": "empty", "msg": f"新浪：{target_str} 前6天无数据"}
-                high = float(week_df['high'].max())
-                low = float(week_df['low'].min())
-                close_row = df[df['date'].dt.date <= target_date].iloc[-1]
-                close = float(close_row['close'])
-                real_day = close_row['date'].strftime('%Y-%m-%d')
-                name = _get_stock_name_from_tencent(code)
-                return (name, high, low, close, real_day, target_str)
-            date_mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
-            if date_mask.any():
-                row = df[date_mask].iloc[-1]
-                real_day = target_str
-            else:
-                valid = df[df['date'].dt.date <= target_date]
-                if valid.empty:
-                    if attempt < retry:
-                        continue
-                    return {"err": "empty", "msg": f"新浪：{target_str} 及之前无有效数据"}
-                row = valid.iloc[-1]
-                real_day = valid.iloc[-1]['date'].strftime('%Y-%m-%d')
-            name = _get_stock_name_from_tencent(code)
-            return (name, float(row['high']), float(row['low']), float(row['close']), real_day, target_str)
-        except Exception as e:
-            if attempt < retry:
-                continue
-            return {"err": "other", "msg": f"新浪异常：{str(e)}"}
-    return {"err": "fail", "msg": "新浪多次重试失败"}
+            klines = data.get("data", {}).get("klines", [])
+            if not klines:
+                return None
+            line = klines[0].split(",")
+            stock_name = data["data"]["name"]
+            high = float(line[3])
+            low = float(line[4])
+            close = float(line[2])
+            return (stock_name, high, low, close, date_show, date_show)
 
+        # 雪球日线
+        elif source == "雪球":
+            symbol = f"{prefix}{stock_code}"
+            end_ts = int(datetime.combine(target_date, datetime.max.time()).timestamp() * 1000)
+            start_ts = int(datetime.combine(target_date, datetime.min.time()).timestamp() * 1000)
+            url = f"https://stock.xueqiu.com/v5/stock/history/kline?symbol={symbol}&begin={start_ts}&end={end_ts}&period=day"
+            headers['Referer'] = 'https://xueqiu.com/'
+            resp = get(url, headers=headers, timeout=10)
+            data = resp.json()
+            items = data.get("data", {}).get("items", [])
+            if not items:
+                return None
+            item = items[0]
+            stock_name = data["data"]["stock_name"]
+            high = float(item["high"])
+            low = float(item["low"])
+            close = float(item["close"])
+            return (stock_name, high, low, close, date_show, date_show)
 
-def _get_tencent_data(stock_code, target_date, retry):
-    date_show = target_date.strftime('%Y-%m-%d')
-    if stock_code.startswith(("5", "6")):
-        prefix = "sh"
-    elif stock_code.startswith(("0", "1", "3")):
-        prefix = "sz"
-    else:
-        return {"err": "code", "msg": "腾讯仅支持0/1/3/5/6开头A股代码"}
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Connection': 'close', 'Accept-Language': 'zh-CN,zh;q=0.9',
-        'Accept': 'text/html,application/json,*/*;q=0.8', 'Referer': 'https://stock.qq.com/'
-    }
-    for attempt in range(retry + 1):
-        try:
+        # 腾讯财经日线（默认）
+        elif source == "腾讯财经":
             url = f"https://qt.gtimg.cn/q={prefix}{stock_code}"
             resp = get(url, headers=headers, timeout=10)
             text = resp.text
             if '~' not in text:
-                if attempt < retry:
-                    time.sleep(0.8)
-                    continue
-                return {"err": "parse", "msg": "腾讯接口格式异常"}
+                return None
             parts = text.split('~')
-            name = parts[1]
-            _name_cache[stock_code] = name
-            return (name, float(parts[33]), float(parts[34]), float(parts[3]), date_show, date_show)
-        except (RequestException, ConnectionError, Timeout):
-            if attempt < retry:
-                time.sleep(1)
-                continue
-            return {"err": "network", "msg": "腾讯网络超时"}
-        except Exception as e:
-            return {"err": "other", "msg": f"腾讯异常：{str(e)}"}
-    return {"err": "fail", "msg": "多次重试失败"}
+            stock_name = parts[1]
+            hist_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={prefix}{stock_code},day,,{date_str},{date_str},256,qfq"
+            resp_hist = get(hist_url, headers=headers, timeout=10)
+            hist_data = resp_hist.json()
+            klist = hist_data.get(f"{prefix}{stock_code}", {}).get("day", [])
+            if not klist:
+                return None
+            k = klist[0]
+            high = float(k[3])
+            low = float(k[4])
+            close = float(k[2])
+            return (stock_name, high, low, close, date_show, date_show)
 
+        # 网易财经日线
+        elif source == "网易财经":
+            net_code = f"0{stock_code}" if prefix == "sz" else f"1{stock_code}"
+            url = f"https://api.money.163.com/data/chart/{net_code}/day?start={date_str}&end={date_str}"
+            resp = get(url, headers=headers, timeout=10)
+            resp.encoding = "utf-8"
+            text = resp.text
+            match_high = re.search(r'"high":([\d.]+)', text)
+            match_low = re.search(r'"low":([\d.]+)', text)
+            match_close = re.search(r'"close":([\d.]+)', text)
+            match_name = re.search(r'"name":"([^"]+)"', text)
+            if not all([match_name, match_high, match_low, match_close]):
+                return None
+            stock_name = match_name.group(1)
+            high = float(match_high.group(1))
+            low = float(match_low.group(1))
+            close = float(match_close.group(1))
+            return (stock_name, high, low, close, date_show, date_show)
 
-def get_stock_data(stock_code, target_date, source="新浪财经", retry=2, weekly=False):
-    target_date = target_date.date() if isinstance(target_date, datetime) else target_date
-    if source == "Baostock":
-        return _get_baostock_data(stock_code, target_date, weekly=weekly)
-    elif source == "新浪财经":
-        return _get_sina_kline_data(stock_code, target_date, weekly=weekly)
-    elif source == "腾讯实时":
-        if weekly:
-            return {"err": "weekly", "msg": "腾讯仅支持实时行情，无法按周计算，请切换至新浪或Bao"}
-        return _get_tencent_data(stock_code, target_date, retry)
+    except (RequestException, ConnectionError, Timeout):
+        return None
+    except Exception:
+        return None
+
+# 沪深300PE接口，仅设置页手动点刷新才请求
+def get_hs300_pe_median():
+    try:
+        url = "https://legulegu.com/stockdata/hs300-ttm-lyr"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Referer': 'https://legulegu.com/',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Cache-Control': 'max-age=0',
+        }
+        session = Session()
+        session.get("https://legulegu.com/", headers=headers, timeout=10)
+        resp = session.get(url, headers=headers, timeout=15)
+        resp.encoding = 'utf-8'
+        html = resp.text
+        patterns = [
+            r'沪深300静态市盈率中位数\s*</td>\s*<td[^>]*>([\d.]+)',
+            r'静态市盈率中位数\s*</td>\s*<td[^>]*>([\d.]+)',
+            r'"medianLyr":([\d.]+)',
+        ]
+        for p in patterns:
+            m = re.search(p, html)
+            if m:
+                return m.group(1)
+        return None
+    except Exception:
+        return None
+
+# 全套枢轴点位计算
+def calculate_pivot_points(high, low, close):
+    results = []
+    pp = (high + low + close) / 3
+    s1 = (2 * pp) - high
+    r1 = (2 * pp) - low
+    s2 = pp - (high - low)
+    r2 = pp + (high - low)
+    s3 = s2 - (high - low)
+    r3 = r2 + (high - low)
+    results.append("经典枢轴点-PP: {:.3f}".format(pp))
+    results.append("R1: {:.3f}, R2: {:.3f}, R3: {:.3f}".format(r1, r2, r3))
+    results.append("S1: {:.3f}, S2: {:.3f}, S3: {:.3f}".format(s1, s2, s3))
+
+    pp = (high + low + close) / 3
+    r1 = pp + (high - low) * 0.382
+    r2 = pp + (high - low) * 0.618
+    r3 = pp + (high - low) * 1.0
+    s1 = pp - (high - low) * 0.382
+    s2 = pp - (high - low) * 0.618
+    s3 = pp - (high - low) * 1.0
+    results.append("斐波那契枢轴点-PP: {:.3f}".format(pp))
+    results.append("R1: {:.3f}, R2: {:.3f}, R3: {:.3f}".format(r1, r2, r3))
+    results.append("S1: {:.3f}, S2: {:.3f}, S3: {:.3f}".format(s1, s2, s3))
+
+    pp = (high + low + close) / 3
+    r1 = close + (high - low) / 12
+    r2 = close + (high - low) / 6
+    r3 = close + (high - low) / 4
+    r4 = close + (high - low) / 2
+    s1 = close - (high - low) / 12
+    s2 = close - (high - low) / 6
+    s3 = close - (high - low) / 4
+    s4 = close - (high - low) / 2
+    results.append("卡玛利亚枢轴点-PP: {:.3f}".format(pp))
+    results.append("R1: {:.3f}, R2: {:.3f}, R3: {:.3f}, R4: {:.3f}".format(r1, r2, r3, r4))
+    results.append("S1: {:.3f}, S2: {:.3f}, S3: {:.3f}, S4: {:.3f}".format(s1, s2, s3, s4))
+
+    pp = (high + low + 2 * close) / 4
+    s1 = (2 * pp) - high
+    r1 = (2 * pp) - low
+    s2 = pp - (high - low)
+    r2 = pp + (high - low)
+    results.append("伍迪枢轴点-PP: {:.3f}".format(pp))
+    results.append("R1: {:.3f}, R2: {:.3f}".format(r1, r2))
+    results.append("S1: {:.3f}, S2: {:.3f}".format(s1, s2))
+
+    if close < low:
+        x = high + 2 * low + close
+    elif close > high:
+        x = 2 * high + low + close
     else:
-        return {"err": "source", "msg": "未知数据源"}
+        x = high + low + 2 * close
+    pp = x / 4
+    r1 = x / 2 - low
+    s1 = x / 2 - high
+    results.append("迪马克枢轴点-PP: {:.3f}".format(pp))
+    results.append("R1: {:.3f}".format(r1))
+    results.append("S1: {:.3f}\n".format(s1))
+    return results
 
+def parse_results(results):
+    blocks = []
+    current = None
+    for line in results:
+        line = line.strip()
+        if not line:
+            continue
+        if "枢轴点-PP:" in line:
+            if current:
+                blocks.append(current)
+            title = line.split("枢轴点-PP:")[0].strip()
+            pp = line.split("枢轴点-PP:")[1].strip()
+            current = {"title": title, "pp": pp, "r": {}, "s": {}}
+        elif line.startswith("R"):
+            parts = [p.strip() for p in line.split(",") if p.strip()]
+            for p in parts:
+                if ":" in p:
+                    k, v = p.split(":", 1)
+                    current["r"][k.strip()] = v.strip()
+        elif line.startswith("S"):
+            parts = [p.strip() for p in line.split(",") if p.strip()]
+            for p in parts:
+                if ":" in p:
+                    k, v = p.split(":", 1)
+                    current["s"][k.strip()] = v.strip()
+    if current:
+        blocks.append(current)
+    return blocks
 
-# ==================== 枢轴点计算（单算法） ====================
-
-def calculate_single_pivot(high, low, close, algorithm="经典"):
-    if algorithm == "经典":
-        pp = (high + low + close) / 3
-        r1 = (2 * pp) - low
-        s1 = (2 * pp) - high
-        r2 = pp + (high - low)
-        s2 = pp - (high - low)
-        r3 = r2 + (high - low)
-        s3 = s2 - (high - low)
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": "-", "s4": "-"}
-    elif algorithm == "斐波那契":
-        pp = (high + low + close) / 3
-        r1 = pp + (high - low) * 0.382
-        s1 = pp - (high - low) * 0.382
-        r2 = pp + (high - low) * 0.618
-        s2 = pp - (high - low) * 0.618
-        r3 = pp + (high - low) * 1.0
-        s3 = pp - (high - low) * 1.0
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": "-", "s4": "-"}
-    elif algorithm == "卡玛利亚":
-        pp = (high + low + close) / 3
-        r1 = close + (high - low) / 12
-        s1 = close - (high - low) / 12
-        r2 = close + (high - low) / 6
-        s2 = close - (high - low) / 6
-        r3 = close + (high - low) / 4
-        s3 = close - (high - low) / 4
-        r4 = close + (high - low) / 2
-        s4 = close - (high - low) / 2
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": round(r3, 3), "s3": round(s3, 3), "r4": round(r4, 3), "s4": round(s4, 3)}
-    elif algorithm == "伍迪":
-        pp = (high + low + 2 * close) / 4
-        r1 = (2 * pp) - low
-        s1 = (2 * pp) - high
-        r2 = pp + (high - low)
-        s2 = pp - (high - low)
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
-    elif algorithm == "迪马克":
-        if close < low:
-            x = high + 2 * low + close
-        elif close > high:
-            x = 2 * high + low + close
-        else:
-            x = high + low + 2 * close
-        pp = x / 4
-        r1 = x / 2 - low
-        s1 = x / 2 - high
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
-    else:
-        pp = (high + low + close) / 3
-        r1 = (2 * pp) - low
-        s1 = (2 * pp) - high
-        r2 = pp + (high - low)
-        s2 = pp - (high - low)
-        return {"pp": round(pp, 3), "r1": round(r1, 3), "s1": round(s1, 3), "r2": round(r2, 3), "s2": round(s2, 3), "r3": "-", "s3": "-", "r4": "-", "s4": "-"}
-
-
-# ==================== 代码解析 ====================
-
-def parse_stock_codes(text):
-    if not text:
-        return []
-    unified = text.replace('；', ' ').replace(';', ' ').replace('，', ' ').replace(',', ' ').replace('\n', ' ').replace('\t', ' ').replace('\r', ' ')
-    parts = unified.split()
-    codes = []
-    for p in parts:
-        c = p.strip()
-        if c and c.isdigit() and 4 <= len(c) <= 8:
-            codes.append(c)
-    seen = set()
-    result = []
-    for c in codes:
-        if c not in seen:
-            seen.add(c)
-            result.append(c)
-    return result
-
-
-# ==================== 名称截断工具 ====================
-
-def truncate_name(name, max_chars=6):
-    if len(name) <= max_chars:
-        return name
-    return name[:max_chars - 1] + "…"
-
-
-def get_name_font_size(name):
-    ln = len(name)
-    if ln >= 6:
-        return 9
-    elif ln >= 5:
-        return 10
-    elif ln >= 4:
-        return 11
-    else:
-        return 12
-
-
-# ==================== 批量结果表格构建 ====================
-
-def build_batch_result_table(results, page, algorithm):
+# 生成表格卡片
+def build_all_in_one_table_card(blocks):
     r_color = ft.Colors.RED_400
     s_color = ft.Colors.GREEN_400
     pp_color = ft.Colors.BLUE_700
+    level_list = ["R3", "R2", "R1", "PP", "S1", "S2", "S3"]
+    algo_list = [("经典", "经典"), ("斐波", "斐波那契"), ("卡玛", "卡玛利亚"), ("伍迪", "伍迪"), ("迪马克", "迪马克")]
+    block_map = {b["title"]: b for b in blocks}
 
-    columns = [
-        ("代码", 48, None, True),
-        ("名称", 64, None, True),
-        ("PP", 48, pp_color, True),
-        ("R1", 48, r_color, True),
-        ("S1", 48, s_color, True),
-        ("R2", 48, r_color, True),
-        ("S2", 48, s_color, True),
-        ("R3", 48, r_color, True),
-        ("S3", 48, s_color, True),
-        ("R4", 48, r_color, True),
-        ("S4", 48, s_color, True),
-    ]
-
-    def _copy_cell(text):
-        def handler(e):
-            success = copy_to_clipboard(str(text), page)
-            if success:
-                page.snack_bar = ft.SnackBar(ft.Text(f"已复制：{text}", size=12))
-            else:
-                page.snack_bar = ft.SnackBar(ft.Text("复制失败", size=12))
-            page.snack_bar.open = True
-            page.update()
-        return handler
-
-    def _copy_row(row_text):
-        def handler(e):
-            success = copy_to_clipboard(str(row_text), page)
-            if success:
-                page.snack_bar = ft.SnackBar(ft.Text("已复制整行数据", size=12))
-            else:
-                page.snack_bar = ft.SnackBar(ft.Text("复制失败", size=12))
-            page.snack_bar.open = True
-            page.update()
-        return handler
-
-    def make_cell(text, width, color=None, bold=False, size=11):
-        txt_len = len(str(text))
-        if txt_len >= 9:
-            adaptive_size = 8
-        elif txt_len >= 8:
-            adaptive_size = 9
-        elif txt_len >= 7:
-            adaptive_size = 10
+    def make_row(level_name, is_header=False):
+        cells = []
+        if is_header:
+            txt = ft.Text(" ", size=12)
         else:
-            adaptive_size = size
-        txt = ft.Text(
-            text, size=adaptive_size, weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
-            color=color, no_wrap=True, selectable=True, text_align=ft.TextAlign.CENTER,
-            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS
-        )
-        return ft.Container(
-            content=txt, width=width, padding=1,
-            on_click=_copy_cell(text), tooltip="点击复制单元格",
-            bgcolor=ft.Colors.TRANSPARENT
-        )
+            c = r_color if level_name.startswith("R") else s_color if level_name.startswith("S") else pp_color
+            txt = ft.Text(level_name, size=12, weight=ft.FontWeight.BOLD, color=c)
+        cells.append(ft.Container(txt, width=38, padding=5))
+        for show_name, data_key in algo_list:
+            if is_header:
+                txt = ft.Text(show_name, size=12, weight=ft.FontWeight.BOLD)
+            else:
+                data = block_map[data_key]
+                val = data["pp"] if level_name == "PP" else data["r"].get(level_name, "-") if level_name.startswith("R") else data["s"].get(level_name, "-")
+                txt = ft.Text(val, size=12)
+            cells.append(ft.Container(txt, width=62, padding=5))
+        return ft.Row(cells, spacing=0)
 
-    header_cells = [make_cell(title, width, color, bold, 10) for title, width, color, bold in columns]
-    header_row = ft.Row(header_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER)
-    rows = [header_row, ft.Divider(height=1, color=ft.Colors.GREY_400)]
-
-    for r in results:
-        if r.get("status") == "error":
-            name_text = truncate_name(r.get("name", "获取失败"), 6)
-            name_size = get_name_font_size(name_text)
-            err_cells = [
-                make_cell(r["code"], 48, size=10),
-                make_cell(name_text, 64, size=name_size, color=ft.Colors.GREY_500),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-                make_cell("-", 48, size=10, color=ft.Colors.GREY_400),
-            ]
-            row_container = ft.Container(content=ft.Row(err_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER), bgcolor=ft.Colors.GREY_50)
-            rows.append(row_container)
-        else:
-            raw_name = r["name"]
-            name_text = truncate_name(raw_name, 6)
-            name_size = get_name_font_size(raw_name)
-            data_cells = [
-                make_cell(r["code"], 48, size=10),
-                make_cell(name_text, 64, size=name_size, bold=True),
-                make_cell(str(r["pp"]), 48, size=11, color=pp_color),
-                make_cell(str(r["r1"]), 48, size=11, color=r_color),
-                make_cell(str(r["s1"]), 48, size=11, color=s_color),
-                make_cell(str(r["r2"]), 48, size=11, color=r_color),
-                make_cell(str(r["s2"]), 48, size=11, color=s_color),
-                make_cell(str(r["r3"]), 48, size=11, color=r_color),
-                make_cell(str(r["s3"]), 48, size=11, color=s_color),
-                make_cell(str(r["r4"]), 48, size=11, color=r_color),
-                make_cell(str(r["s4"]), 48, size=11, color=s_color),
-            ]
-            row_copy_text = f"{r['code']}\t{raw_name}\t{r['pp']}\t{r['r1']}\t{r['s1']}\t{r['r2']}\t{r['s2']}\t{r['r3']}\t{r['s3']}\t{r['r4']}\t{r['s4']}"
-            row_container = ft.Container(
-                content=ft.Row(data_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER),
-                on_click=_copy_row(row_copy_text),
-                tooltip="点击复制整行（制表符分隔）"
-            )
-            rows.append(row_container)
+    header = make_row("", is_header=True)
+    divider = ft.Divider(height=1, color=ft.Colors.GREY_300)
+    rows = [header, divider]
+    for lv in level_list:
+        rows.append(make_row(lv))
         rows.append(ft.Divider(height=1, color=ft.Colors.GREY_200))
+    table_col = ft.Column(rows, spacing=0)
+    return ft.Card(bgcolor=ft.Colors.WHITE, content=ft.Container(table_col, padding=10), elevation=2)
 
-    table_col = ft.Column(rows, spacing=0, tight=True)
-    return ft.Container(
-        content=ft.Row([table_col], scroll=ft.ScrollMode.AUTO),
-        padding=2,
-    )
+# 日期范围工具
+def calc_date_range(end_date, mode):
+    if mode == "按周计算":
+        start_date = end_date - timedelta(days=6)
+        return start_date, end_date
+    else:
+        return end_date, end_date
 
-
-# ==================== 工具函数 ====================
-
-def show_snack(page, message):
-    page.snack_bar = ft.SnackBar(ft.Text(message, size=12))
-    page.snack_bar.open = True
+# 计算按钮事件（防重复点击，先清空表格）
+def refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source):
+    code = auto_code.value.strip()
+    if not code:
+        page.snack_bar = ft.SnackBar(ft.Text("请输入股票代码"))
+        page.snack_bar.open = True
+        page.update()
+        return
+    calc_btn_auto.disabled = True
+    auto_results.controls.clear()
     page.update()
 
-
-def _build_copy_all_handler(results, page, result_area, manual_copy_state):
-    """
-    构建复制全部结果的回调。
-    包含标题行，自动复制失败时弹出可关闭的手动复制框。
-    Android提示语适配手机操作（长按全选复制）。
-    """
-    def handler(e):
-        # 先移除之前的手动复制框（避免堆积）
-        if manual_copy_state[0] is not None and manual_copy_state[0] in result_area.controls:
-            result_area.controls.remove(manual_copy_state[0])
-            manual_copy_state[0] = None
-
-        # 构建带标题的复制文本
-        lines = ["代码\t名称\tPP\tR1\tS1\tR2\tS2\tR3\tS3\tR4\tS4"]
-        for r in results:
-            if r.get("status") == "ok":
-                lines.append(f"{r['code']}\t{r['name']}\t{r['pp']}\t{r['r1']}\t{r['s1']}\t{r['r2']}\t{r['s2']}\t{r['r3']}\t{r['s3']}\t{r['r4']}\t{r['s4']}")
-        text = "\n".join(lines)
-
-        # 尝试自动复制
-        success = copy_to_clipboard(text, page)
-
-        if success:
-            page.snack_bar = ft.SnackBar(ft.Text("已复制全部结果（含标题行，可直接粘贴Excel）", size=12))
-            page.snack_bar.open = True
-            page.update()
-        else:
-            # 自动复制失败，弹出可关闭的手动复制框
-            # 平台适配提示语
-            if _IS_ANDROID:
-                hint_text = "长按文本框 → 全选 → 复制"
+    def task():
+        try:
+            target_day = date_store[0]
+            sd, ed = calc_date_range(target_day, auto_mode.value)
+            data = get_stock_data(code, target_day, source=data_source.value)
+            res = []
+            if not data:
+                res = [ft.Text("❌ 该日期无行情（非交易日/接口无返回），更换日期或切换数据源", color=ft.Colors.RED)]
             else:
-                hint_text = "Ctrl+A 全选，Ctrl+C 复制"
+                stock_name, high, low, close, _, _ = data
+                auto_name.value = f"名称：{stock_name}"
+                auto_date_range.value = f"{sd.strftime('%Y-%m-%d')} ~ {ed.strftime('%Y-%m-%d')}"
+                auto_high.value = f"{high:.3f}"
+                auto_low.value = f"{low:.3f}"
+                auto_close.value = f"{close:.3f}"
+                if high <= 0 or low <= 0 or close <= 0 or high < low or close > high or close < low:
+                    res = [ft.Text("❌ 行情数值异常", color=ft.Colors.RED)]
+                else:
+                    blocks = parse_results(calculate_pivot_points(high, low, close))
+                    res = [build_all_in_one_table_card(blocks)]
+            auto_results.controls = res
+            calc_btn_auto.disabled = False
+            page.update()
+        except Exception as e:
+            auto_results.controls = [ft.Text(f"错误:{e}", color=ft.Colors.RED)]
+            calc_btn_auto.disabled = False
+            page.update()
+    threading.Thread(target=task, daemon=True).start()
 
-            def close_manual_copy(e):
-                if manual_copy_state[0] is not None and manual_copy_state[0] in result_area.controls:
-                    result_area.controls.remove(manual_copy_state[0])
-                    manual_copy_state[0] = None
-                page.update()
+def click_auto_calc(e, page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source):
+    refresh_calc_data(page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source)
 
-            manual_copy_field = ft.Column([
-                ft.Row([
-                    ft.Text(f"⚠ 自动复制失败，请手动复制 ({hint_text})", size=12, color=ft.Colors.ORANGE_700, weight=ft.FontWeight.BOLD, expand=True),
-                    ft.IconButton(
-                        ft.Icons.CLOSE,
-                        icon_size=18,
-                        icon_color=ft.Colors.GREY_600,
-                        tooltip="关闭",
-                        on_click=close_manual_copy,
-                    ),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.TextField(
-                    value=text,
-                    multiline=True,
-                    min_lines=3,
-                    max_lines=10,
-                    read_only=True,
-                    text_size=11,
-                    border_color=ft.Colors.ORANGE,
-                    bgcolor=ft.Colors.ORANGE_50,
-                    selectable=True,
-                ),
-            ], spacing=4)
-
-            # 插入到结果表格之前（索引1位置，在统计行之后）
-            insert_idx = 1 if len(result_area.controls) > 1 else len(result_area.controls)
-            result_area.controls.insert(insert_idx, manual_copy_field)
-            manual_copy_state[0] = manual_copy_field
-
-            page.snack_bar = ft.SnackBar(ft.Text("已弹出手动复制框，点击×可关闭", size=12))
+def click_manual_calc(e, page, man_high, man_low, man_close, man_results):
+    try:
+        h = float(man_high.value or 0)
+        l = float(man_low.value or 0)
+        c = float(man_close.value or 0)
+        if h <=0 or l <=0 or c <=0:
+            page.snack_bar = ft.SnackBar(ft.Text("请完整输入高低收价格"))
             page.snack_bar.open = True
             page.update()
-
-    return handler
-
-
-# ==================== 批量计算事件 ====================
-
-async def batch_calc_async(e, page, code_input, auto_mode, date_store, source_state,
-                           algo_dropdown, result_area, calc_btn, source_label,
-                           source_note_text, status_text, manual_copy_state):
-    raw_text = code_input.value.strip()
-    if not raw_text:
-        show_snack(page, "请输入股票代码")
-        return
-    codes = parse_stock_codes(raw_text)
-    if not codes:
-        show_snack(page, "未解析到有效股票代码（需纯数字，4-8位）")
-        return
-
-    calc_btn.disabled = True
-    page.update()
-
-    try:
-        target_day = date_store[0]
-        mode = auto_mode.value
-        source = source_state[0]
-        algorithm = algo_dropdown.value
-        weekly = (mode == "按周计算")
-
-        if weekly and source == "腾讯实时":
-            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至新浪财经或Baostock"
-            source_note_text.color = ft.Colors.ORANGE_700
             return
-        else:
-            source_note_text.value = ""
-
-        results = []
-        total = len(codes)
-        loop = asyncio.get_event_loop()
-
-        for i, code in enumerate(codes, 1):
-            status_text.value = f"处理中 {i}/{total}：{code}"
+        if h < l or c > h or c < l:
+            page.snack_bar = ft.SnackBar(ft.Text("价格区间异常"))
+            page.snack_bar.open = True
             page.update()
-            try:
-                data = await loop.run_in_executor(None, get_stock_data, code, target_day, source, 2, weekly)
-                if isinstance(data, dict) and "err" in data:
-                    results.append({
-                        "idx": i, "code": code, "name": data.get("msg", "获取失败"),
-                        "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-",
-                        "status": "error"
-                    })
-                else:
-                    stock_name, high, low, close, real_day, target_str = data
-                    if high <= 0 or low <= 0 or close <= 0 or high < low or close > high or close < low:
-                        results.append({
-                            "idx": i, "code": code, "name": "数值异常",
-                            "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-",
-                            "status": "error"
-                        })
-                    else:
-                        pivot = calculate_single_pivot(high, low, close, algorithm)
-                        results.append({
-                            "idx": i, "code": code, "name": stock_name,
-                            "pp": pivot["pp"], "r1": pivot["r1"], "s1": pivot["s1"],
-                            "r2": pivot["r2"], "s2": pivot["s2"], "r3": pivot["r3"], "s3": pivot["s3"],
-                            "r4": pivot["r4"], "s4": pivot["s4"], "status": "ok"
-                        })
-            except Exception as e:
-                results.append({
-                    "idx": i, "code": code, "name": f"异常：{str(e)[:20]}",
-                    "pp": "-", "r1": "-", "s1": "-", "r2": "-", "s2": "-", "r3": "-", "s3": "-", "r4": "-", "s4": "-",
-                    "status": "error"
-                })
-            await asyncio.sleep(0.3)
-
-        # 构建结果表格
-        result_table = build_batch_result_table(results, page, algorithm)
-        ok_count = sum(1 for r in results if r["status"] == "ok")
-        err_count = total - ok_count
-
-        # 复制全部按钮
-        copy_all_btn = ft.TextButton(
-            "复制全部",
-            icon=ft.Icons.CONTENT_COPY,
-            style=ft.ButtonStyle(color=ft.Colors.BLUE_600),
-            on_click=_build_copy_all_handler(results, page, result_area, manual_copy_state)
-        )
-
-        # 清空结果区域（保留手动复制框状态由handler管理）
-        result_area.controls = [
-            ft.Row([
-                ft.Text(f"计算完成：成功 {ok_count} 条，失败 {err_count} 条", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-                copy_all_btn,
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            result_table,
-        ]
-        # 重置手动复制框状态（因为result_area.controls被重建了）
-        manual_copy_state[0] = None
-
-        source_label.value = f"来源：{source} | 算法：{algorithm} | 模式：{mode}"
-        status_text.value = f"就绪 | 共 {total} 条"
-
-    except Exception as e:
-        show_snack(page, f"计算出错：{str(e)}")
-    finally:
-        calc_btn.disabled = False
+            return
+        blocks = parse_results(calculate_pivot_points(h, l, c))
+        man_results.controls = [build_all_in_one_table_card(blocks)]
+        page.update()
+    except ValueError:
+        page.snack_bar = ft.SnackBar(ft.Text("请输入有效数字"))
+        page.snack_bar.open = True
         page.update()
 
-
 def date_change_event(e, page, auto_date_text, date_store):
-    picked = e.control.value
-    if picked is None:
-        return
-    if isinstance(picked, datetime):
-        corrected = picked + timedelta(hours=8)
-        date_store[0] = corrected.date()
-    else:
-        date_store[0] = picked
+    date_store[0] = e.control.value
     auto_date_text.value = date_store[0].strftime('%Y-%m-%d')
     page.update()
 
-
-def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
-    source_state[0] = new_source
-    for btn in [xl_btn, bs_btn, tx_btn]:
-        btn.style = ft.ButtonStyle(
-            bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800,
-            shape=ft.RoundedRectangleBorder(radius=6),
-        )
-    if new_source == "新浪财经":
-        xl_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
-    elif new_source == "Baostock":
-        bs_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.ORANGE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
-    elif new_source == "腾讯实时":
-        tx_btn.style = ft.ButtonStyle(bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6))
+def refresh_hs300_pe(e, page, hs300_pe_text):
+    hs300_pe_text.value = "沪深300PE中值：刷新中..."
     page.update()
+    def task():
+        val = get_hs300_pe_median()
+        hs300_pe_text.value = f"沪深300PE中值：{val}" if val else "沪深300PE中值：获取失败"
+        page.update()
+    threading.Thread(target=task, daemon=True).start()
 
-
-# ==================== 主界面 ====================
-
+# 主界面入口
 def main(page: ft.Page):
-    page.title = "枢轴点V2"
+    page.title = "股票枢轴点计算器"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
-    page.padding = 0
+    page.padding = ft.Padding(left=10, top=15, right=10, bottom=10)
     page.window_width = 420
-    page.window_height = 920
+    page.window_height = 880
+    date_store = [datetime.now().date() - timedelta(days=1)]
 
-    date_store = [datetime.now().date()]
-    source_state = ["新浪财经"]
-    # 手动复制框状态追踪（用于避免堆积和关闭）
-    manual_copy_state = [None]
-
-    # ===== 数据源按钮：新浪优先，Bao次之，腾讯最后 =====
-    xl_btn = ft.Button(
-        "新浪", expand=1, height=34,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=6)),
-    )
-    bs_btn = ft.Button(
-        "Bao", expand=1, height=34,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
-    )
-    tx_btn = ft.Button(
-        "腾讯", expand=1, height=34,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.GREY_200, color=ft.Colors.GREY_800, shape=ft.RoundedRectangleBorder(radius=6)),
-    )
-
-    # ===== 多代码输入框 =====
-    code_input = ft.TextField(
-        label="股票代码（多个用逗号/空格/换行隔开）",
-        hint_text="如：600519, 000001, 300750",
-        value="159516 588200 588170 515050 562820 562800 600497 159985 159865 159825 563360 159952",
-        multiline=True, min_lines=3, max_lines=5,
-        expand=1, text_size=13,
-        label_style=ft.TextStyle(size=11), content_padding=10
-    )
-
-    # ===== 算法选择 =====
-    algo_dropdown = ft.Dropdown(
-        label="枢轴点算法",
+    # 下拉默认腾讯财经，四个数据源全部保留
+    data_source_dropdown = ft.Dropdown(
+        label="行情数据源",
         options=[
-            ft.DropdownOption("经典"),
-            ft.DropdownOption("斐波那契"),
-            ft.DropdownOption("卡玛利亚"),
-            ft.DropdownOption("伍迪"),
-            ft.DropdownOption("迪马克"),
+            ft.DropdownOption("腾讯财经"),
+            ft.DropdownOption("雪球"),
+            ft.DropdownOption("东方财富"),
+            ft.DropdownOption("网易财经"),
         ],
-        value="经典",
-        expand=1, text_size=12,
-        label_style=ft.TextStyle(size=11), content_padding=8
+        value="腾讯财经",
+        expand=1
     )
 
+    # 自动查询页面
+    auto_code = ft.TextField(label="股票代码", hint_text="如 000062 / 588170", expand=1, value="000062")
     auto_mode = ft.Dropdown(
         label="计算模式",
         options=[ft.DropdownOption("按日计算"), ft.DropdownOption("按周计算")],
-        value="按日计算", expand=1, text_size=12,
-        label_style=ft.TextStyle(size=11), content_padding=8
+        value="按日计算",
+        expand=1
     )
+    auto_date_text = ft.Text(date_store[0].strftime('%Y-%m-%d'), size=14, selectable=True)
+    auto_name = ft.Text("名称：等待获取...", size=14, color=ft.Colors.GREY_700, selectable=True)
+    init_sd, init_ed = calc_date_range(date_store[0], auto_mode.value)
+    auto_date_range = ft.Text(f"{init_sd.strftime('%Y-%m-%d')} ~ {init_ed.strftime('%Y-%m-%d')}", size=14, color=ft.Colors.GREY_700, selectable=True)
+    # 只读输入框仅保留read_only，无selectable兼容旧Flet
+    auto_high = ft.TextField(label="最高", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
+    auto_low = ft.TextField(label="最低", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
+    auto_close = ft.TextField(label="收盘", keyboard_type=ft.KeyboardType.NUMBER, expand=1, read_only=True)
+    auto_results = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=10)
 
-    auto_date_text = ft.Text(
-        date_store[0].strftime('%Y-%m-%d'), size=13,
-        selectable=True, weight=ft.FontWeight.BOLD
-    )
-
-    source_label = ft.Text("", size=10, color=ft.Colors.GREY_600, italic=True, selectable=True)
-    source_note_text = ft.Text("", size=11, color=ft.Colors.GREY_600)
-    status_text = ft.Text("就绪", size=11, color=ft.Colors.GREY_600, selectable=True)
-    result_area = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=6, expand=True)
-
-    date_picker = ft.DatePicker(
-        value=date_store[0],
-        on_change=lambda e: date_change_event(e, page, auto_date_text, date_store)
-    )
+    date_picker = ft.DatePicker(value=date_store[0], on_change=lambda e: date_change_event(e, page, auto_date_text, date_store))
     page.overlay.append(date_picker)
 
-    def open_date_picker(e):
-        date_picker.open = True
-        page.update()
-
-    # ===== 计算按钮 =====
-    calc_btn = ft.Button(
-        "计算",
-        icon=ft.Icons.CALCULATE,
-        height=40, width=120,
-        style=ft.ButtonStyle(
-            bgcolor=ft.Colors.BLUE_600,
-            color=ft.Colors.WHITE,
-            shape=ft.RoundedRectangleBorder(radius=20),
-            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.BOLD),
-            overlay_color=ft.Colors.BLUE_800,
-            elevation=2,
-        ),
-        on_click=lambda e: asyncio.create_task(
-            batch_calc_async(
-                e, page, code_input, auto_mode, date_store, source_state,
-                algo_dropdown, result_area, calc_btn, source_label,
-                source_note_text, status_text, manual_copy_state
-            )
-        )
+    calc_btn_auto = ft.Button(
+        "计算处理",
+        width=110,
+        height=45,
+        on_click=lambda e: click_auto_calc(e, page, auto_code, auto_mode, date_store, auto_name, auto_date_range, auto_high, auto_low, auto_close, auto_results, calc_btn_auto, data_source_dropdown),
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
     )
 
-    def switch_and_refresh(new_source):
-        _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page)
-        if auto_mode.value == "按周计算" and new_source == "腾讯实时":
-            source_note_text.value = "提示：腾讯实时不支持按周计算，请切换至新浪财经或Baostock"
-            source_note_text.color = ft.Colors.ORANGE_700
-            page.update()
-            return
-        source_note_text.value = ""
-        page.update()
-
-    xl_btn.on_click = lambda e: switch_and_refresh("新浪财经")
-    bs_btn.on_click = lambda e: switch_and_refresh("Baostock")
-    tx_btn.on_click = lambda e: switch_and_refresh("腾讯实时")
-
-    # ===== 底部说明区域 =====
-    footer_info = ft.Container(
-        content=ft.Column([
-            ft.Divider(height=1, color=ft.Colors.GREY_300),
-            ft.Row([
-                ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.BLUE, size=14),
-                ft.Text("新浪财经：A股前复权历史行情，无需登录，响应快", size=10, color=ft.Colors.GREY_600),
-            ], spacing=4),
-            ft.Row([
-                ft.Icon(ft.Icons.CLOUD, color=ft.Colors.ORANGE, size=14),
-                ft.Text("Baostock：A股前复权历史日线，免费稳定，需登录（较慢）", size=10, color=ft.Colors.GREY_600),
-            ], spacing=4),
-            ft.Row([
-                ft.Icon(ft.Icons.SPEED, color=ft.Colors.GREEN, size=14),
-                ft.Text("腾讯实时：A股当日行情，非交易日显示最近收盘数据（不支持按周）", size=10, color=ft.Colors.GREY_600),
-            ], spacing=4),
-            ft.Divider(height=1, color=ft.Colors.GREY_200),
-            ft.Row([
-                ft.Icon(ft.Icons.WARNING, color=ft.Colors.RED_400, size=12),
-                ft.Text("免责声明：仅提供技术指标计算，不构成投资建议。", size=9, color=ft.Colors.GREY_500),
-            ], spacing=4),
-            ft.Row([
-                ft.Icon(ft.Icons.INFO, color=ft.Colors.GREY_400, size=10),
-                ft.Text("行情源数据非付费，ETF拆分/折算日附近计算可能不准。", size=9, color=ft.Colors.GREY_500),
-            ], spacing=4),
-        ], spacing=4, tight=True),
-        padding=8,
+    border_style = ft.Border(
+        left=ft.BorderSide(1, ft.Colors.BLACK),
+        top=ft.BorderSide(1, ft.Colors.BLACK),
+        right=ft.BorderSide(1, ft.Colors.BLACK),
+        bottom=ft.BorderSide(1, ft.Colors.BLACK)
     )
 
-    # ===== 状态信息 =====
-    info_column = ft.Column(
-        [source_label, source_note_text, status_text],
-        spacing=0, tight=True
-    )
-
-    # ===== 主布局 =====
-    main_content = ft.Column([
+    page1 = ft.Column([
         ft.Card(
             bgcolor=ft.Colors.WHITE,
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Row([ft.Text("行情源:", size=12, color=ft.Colors.GREY_700), xl_btn, bs_btn, tx_btn],
-                           alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=6),
-                    ft.Divider(height=1, color=ft.Colors.GREY_200),
-                    code_input,
-                    ft.Row([algo_dropdown, auto_mode], spacing=8),
+            content=ft.Container(ft.Column([
+                ft.Row([auto_code, auto_mode], spacing=10),
+                ft.Container(
                     ft.Row([
-                        ft.Text("指定日期:", size=12),
+                        ft.Text("截止日:", size=14),
                         auto_date_text,
-                        ft.IconButton(ft.Icons.CALENDAR_TODAY, icon_size=18, on_click=open_date_picker),
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ], spacing=4), padding=8
-            ),
+                        ft.IconButton(ft.Icons.CALENDAR_TODAY, on_click=lambda e: page.show_dialog(date_picker)),
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    border=border_style,
+                    border_radius=4,
+                    padding=10
+                ),
+                ft.Row([auto_name, auto_date_range], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Row([auto_high, auto_low, auto_close], spacing=10),
+                ft.Row([calc_btn_auto], alignment=ft.MainAxisAlignment.START),
+            ], spacing=12), padding=15),
         ),
-        ft.Row([calc_btn], alignment=ft.MainAxisAlignment.CENTER),
-        info_column,
-        result_area,
-        footer_info,
-    ], spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
+        auto_results
+    ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    page.add(ft.SafeArea(expand=True, content=main_content))
+    # 手动计算页面
+    man_high = ft.TextField(label="最高价", keyboard_type=ft.KeyboardType.NUMBER, expand=1, value="100")
+    man_low = ft.TextField(label="最低价", keyboard_type=ft.KeyboardType.NUMBER, expand=1, value="90")
+    man_close = ft.TextField(label="收盘价", keyboard_type=ft.KeyboardType.NUMBER, expand=1, value="95")
+    man_results = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=10)
+    calc_btn_manual = ft.Button(
+        "计算处理",
+        height=50,
+        on_click=lambda e: click_manual_calc(e, page, man_high, man_low, man_close, man_results),
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+    )
+    page2 = ft.Column([
+        ft.Card(bgcolor=ft.Colors.WHITE, content=ft.Container(ft.Row([man_high, man_low, man_close], spacing=10), padding=15)),
+        calc_btn_manual,
+        man_results
+    ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
 
+    # 设置页面：PE仅手动刷新，无启动自动加载
+    hs300_pe_text = ft.Text("沪深300PE中值：点击右侧刷新按钮查询", size=14, color=ft.Colors.BLUE_700, selectable=True)
+    hs300_refresh_btn = ft.IconButton(icon=ft.Icons.REFRESH, icon_size=18, on_click=lambda e: refresh_hs300_pe(e, page, hs300_pe_text))
+    disclaimer_text = ft.Text(
+        """免责声明：
+1. 本工具仅提供技术指标计算展示，不构成任何投资建议。
+2. 行情数据来自第三方公开接口，延迟/缺失属正常情况。
+3. 沪深300市盈率数据抓取自乐咕乐股网站。
+4. 股市风险较高，盈亏自行承担。
+5. 软件免费开源，无付费功能。""",
+        size=12,
+        color=ft.Colors.GREY_800,
+        selectable=True
+    )
+    page3 = ft.Column([
+        ft.Card(
+            bgcolor=ft.Colors.WHITE,
+            content=ft.Container(ft.Column([
+                ft.Text("大盘估值参考", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([hs300_pe_text, hs300_refresh_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            ], spacing=10), padding=15)
+        ),
+        ft.Card(
+            bgcolor=ft.Colors.WHITE,
+            content=ft.Container(ft.Column([
+                ft.Text("行情数据源设置", size=16, weight=ft.FontWeight.BOLD),
+                data_source_dropdown,
+                ft.Text("四个数据源均可联网查询，默认腾讯财经", size=12, color=ft.Colors.GREY_600)
+            ], spacing=10), padding=15)
+        ),
+        ft.Card(
+            bgcolor=ft.Colors.WHITE,
+            content=ft.Container(ft.Column([
+                ft.Text("免责说明", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.RED_600),
+                disclaimer_text
+            ], spacing=8), padding=15)
+        )
+    ], spacing=15, scroll=ft.ScrollMode.AUTO, expand=True)
+
+    # Tab切换布局，紧凑间距
+    page_list = [page1, page2, page3]
+    content_view = ft.Container(expand=True)
+
+    def switch_page(index):
+        content_view.content = page_list[index]
+        page.update()
+    switch_page(0)
+
+    tab_btn1 = ft.TextButton("自动处理", on_click=lambda e: switch_page(0))
+    tab_btn2 = ft.TextButton("手动计算", on_click=lambda e: switch_page(1))
+    tab_btn3 = ft.TextButton("设置", on_click=lambda e: switch_page(2))
+    top_btn_row = ft.Container(
+        ft.Row([tab_btn1, tab_btn2, tab_btn3], alignment=ft.MainAxisAlignment.CENTER),
+        padding=ft.Padding(top=2, bottom=4, left=0, right=0)
+    )
+
+    page.add(
+        ft.Column(
+            [top_btn_row, content_view],
+            expand=True,
+            spacing=8
+        )
+    )
+    # 彻底删除APP启动自动加载PE的线程，打开零网络请求
 
 if __name__ == "__main__":
+    # 内置安卓网络权限，无需修改yml打包文件
+    # ft.app(target=main, android_permissions=["INTERNET"])
+    # ft.run(target=main)
     ft.run(main)
+
