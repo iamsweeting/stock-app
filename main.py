@@ -32,7 +32,6 @@
 # 【修改记录】
 # V1.5.1 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
 #                    复权说明补充ETF基金份额折算机制说明。
-#                    去除为触摸数据不标颜色
 # V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
 #                    复权说明补充ETF基金注意事项；顶部注释完善。
 # V1.1  2026-07-13  版本重置为V1.1；Bao和东财改为前复权数据；
@@ -544,8 +543,7 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                 if best_err <= 0.01:
                     for pct, dk, lv, fv in all_r:
                         if abs(pct - best_err) < 0.001:
-                            if fv <= verify_high:  # 触摸到：预测值≤实际最高价
-                                best_r_global["red"].add((dk, lv))
+                            best_r_global["red"].add((dk, lv))
                         else:
                             break
             # 次优：所有与第2名误差相同的值（在次优组中找并列）
@@ -563,8 +561,7 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                         for i in range(second_start, len(all_r)):
                             pct, dk, lv, fv = all_r[i]
                             if abs(pct - second_err) < 0.001:
-                                if fv <= verify_high:  # 触摸到
-                                    best_r_global["orange"].add((dk, lv))
+                                best_r_global["orange"].add((dk, lv))
                             else:
                                 break
 
@@ -589,8 +586,7 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                 if best_err <= 0.01:
                     for pct, dk, lv, fv in all_s:
                         if abs(pct - best_err) < 0.001:
-                            if fv <= verify_low:  # 触摸到：预测值≤实际最低价（支撑有效）
-                                best_s_global["green"].add((dk, lv))
+                            best_s_global["green"].add((dk, lv))
                         else:
                             break
             # 次优
@@ -607,8 +603,7 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                         for i in range(second_start, len(all_s)):
                             pct, dk, lv, fv = all_s[i]
                             if abs(pct - second_err) < 0.001:
-                                if fv >= verify_low:  # 触摸到
-                                    best_s_global["yellow"].add((dk, lv))
+                                best_s_global["yellow"].add((dk, lv))
                             else:
                                 break
 
