@@ -1,5 +1,5 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V1.5.1
+# 股票枢轴点计算器 StockPivotCalc V1.5.4
 # ==============================================================================
 # 【功能说明】
 #   输入股票代码，选择日期与数据源，自动计算五种枢轴点。
@@ -30,6 +30,9 @@
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
+# V1.5.4 2026-07-29  修复迪马克枢轴点算法：判断条件改为收盘价vs开盘价（Close<Open/Open>Close）；
+#                    所有数据源增加开盘价(open)返回；按周计算时open取本周首交易日开盘价；
+#                    版本号更新为V1.5.4。
 # V1.5.1 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
 #                    复权说明补充ETF基金份额折算机制说明。
 # V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
@@ -160,7 +163,8 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
             verify_low = float(verify_df['low'].min())
             verify_close = float(verify_df.iloc[-1]['close'])
             verify_date = f"{verify_df.iloc[0]['date'].strftime('%m-%d')}~{verify_df.iloc[-1]['date'].strftime('%m-%d')}"
-            return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_date, target_str,
+            calc_open = float(week_df.iloc[0]['open'])  # 本周首交易日开盘价
+            return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                     verify_high, verify_low, verify_close, verify_date, verify_mode)
         mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
         if mask.any():
@@ -175,6 +179,7 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
         calc_high = float(calc_row['high'])
         calc_low = float(calc_row['low'])
         calc_close = float(calc_row['close'])
+        calc_open = float(calc_row['open'])
         # 验证数据：下一天
         calc_idx = df[df['date'].dt.date <= target_date].index[-1] if not df[df['date'].dt.date <= target_date].empty else -1
         if calc_idx >= 0 and calc_idx + 1 < len(df):
@@ -191,7 +196,7 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
             verify_close = float(verify_row['close'])
             verify_date = verify_row['date'].strftime('%Y-%m-%d')
             verify_mode = "latest"
-        return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_date, target_str,
+        return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                 verify_high, verify_low, verify_close, verify_date, verify_mode)
     except Exception as e:
         return {"err": "other", "msg": f"Baostock异常：{str(e)}"}
@@ -309,7 +314,8 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                 verify_low = float(verify_df['low'].min())
                 verify_close = float(verify_df.iloc[-1]['close'])
                 verify_date = f"{verify_df.iloc[0]['date'].strftime('%m-%d')}~{verify_df.iloc[-1]['date'].strftime('%m-%d')}"
-                return (stock_name, calc_high, calc_low, calc_close, calc_date, target_str,
+                calc_open = float(week_df.iloc[0]['open'])  # 本周首交易日开盘价
+                return (stock_name, calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                         verify_high, verify_low, verify_close, verify_date, verify_mode)
 
             date_mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
@@ -327,6 +333,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
             calc_high = float(calc_row["high"])
             calc_low = float(calc_row["low"])
             calc_close = float(calc_row["close"])
+            calc_open = float(calc_row["open"])
             # 验证数据：下一天
             calc_idx = df[df["date"].dt.date <= target_date].index[-1] if not df[df["date"].dt.date <= target_date].empty else -1
             if calc_idx >= 0 and calc_idx + 1 < len(df):
@@ -343,7 +350,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                 verify_close = float(verify_row['close'])
                 verify_date = verify_row['date'].strftime('%Y-%m-%d')
                 verify_mode = "latest"
-            return (stock_name, calc_high, calc_low, calc_close, calc_date, target_str,
+            return (stock_name, calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                     verify_high, verify_low, verify_close, verify_date, verify_mode)
         except Exception as e:
             if attempt < retry:
@@ -384,6 +391,7 @@ def _get_tencent_data(stock_code, target_date, retry):
             high = float(parts[33])
             low = float(parts[34])
             close = float(parts[3])
+            open_price = float(parts[5])  # 开盘价
             # 腾讯只有当天数据，计算和验证用同一组数据
             if target_date == today:
                 verify_mode = "same_day"
@@ -391,7 +399,7 @@ def _get_tencent_data(stock_code, target_date, retry):
             else:
                 verify_mode = "unsupported"
                 verify_date = "腾讯仅当天"
-            return (name, high, low, close, date_show, date_show,
+            return (name, high, low, close, open_price, date_show, date_show,
                     high, low, close, verify_date, verify_mode)
         except (RequestException, ConnectionError, Timeout):
             if attempt < retry:
@@ -419,7 +427,7 @@ def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False)
 
 # ==================== 枢轴点计算 ====================
 
-def calculate_pivot_points(high, low, close):
+def calculate_pivot_points(high, low, close, open_price=None):
     results = []
     pp = (high + low + close) / 3
     s1 = (2 * pp) - high
@@ -461,10 +469,14 @@ def calculate_pivot_points(high, low, close):
     results.append("伍迪枢轴点-PP: {:.3f}".format(pp))
     results.append("R1: {:.3f}, R2: {:.3f}".format(r1, r2))
     results.append("S1: {:.3f}, S2: {:.3f}".format(s1, s2))
-    if close < low:
-        x = high + 2 * low + close
-    elif close > high:
-        x = 2 * high + low + close
+    # 迪马克枢轴点：判断依据为收盘价 vs 开盘价（非高低点）
+    if open_price is not None:
+        if close < open_price:
+            x = high + 2 * low + close
+        elif close > open_price:
+            x = 2 * high + low + close
+        else:
+            x = high + low + 2 * close
     else:
         x = high + low + 2 * close
     pp = x / 4
@@ -547,10 +559,8 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                         else:
                             break
             # 次优：所有与第2名误差相同的值（在次优组中找并列）
-            if len(all_r) > 1:
-                # 找到第一个不属于最优组的条目
+            if best_err <= 0.02 and len(all_r) > 1:
                 second_start = 0
-                best_err = all_r[0][0]
                 for i, (pct, dk, lv, fv) in enumerate(all_r):
                     if abs(pct - best_err) >= 0.001:
                         second_start = i
@@ -580,19 +590,17 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                         pass
         if all_s:
             all_s.sort(key=lambda x: x[0])
-            # 最优：所有与第1名误差相同的值
-            if all_s[0][0] <= 0.01:
-                best_err = all_s[0][0]
-                if best_err <= 0.01:
-                    for pct, dk, lv, fv in all_s:
-                        if abs(pct - best_err) < 0.001:
-                            best_s_global["green"].add((dk, lv))
-                        else:
-                            break
-            # 次优
-            if len(all_s) > 1:
+            best_err = all_s[0][0]
+            # 最优组：误差≤2%标绿色
+            if best_err <= 0.02:
+                for pct, dk, lv, fv in all_s:
+                    if abs(pct - best_err) < 0.001:
+                        best_s_global["green"].add((dk, lv))
+                    else:
+                        break
+            # 次优组：仅当最优误差≤2%时，次优误差≤2%标黄色
+            if best_err <= 0.02 and len(all_s) > 1:
                 second_start = 0
-                best_err = all_s[0][0]
                 for i, (pct, dk, lv, fv) in enumerate(all_s):
                     if abs(pct - best_err) >= 0.001:
                         second_start = i
@@ -737,7 +745,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
                 source_note_text.value = ""
         else:
             # 新返回格式：(name, calc_h, calc_l, calc_c, calc_date, target_str, verify_h, verify_l, verify_c, verify_date, verify_mode)
-            stock_name, calc_high, calc_low, calc_close, calc_date, target_str, verify_high, verify_low, verify_close, verify_date, verify_mode = data
+            stock_name, calc_high, calc_low, calc_close, calc_open, calc_date, target_str, verify_high, verify_low, verify_close, verify_date, verify_mode = data
             auto_name.value = f"名称：{stock_name}"
             _set_name_size(auto_name, stock_name)
             auto_high.value = f"{verify_high:.3f}"
@@ -770,7 +778,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             if calc_high <= 0 or calc_low <= 0 or calc_close <= 0 or calc_high < calc_low or calc_close > calc_high or calc_close < calc_low:
                 res = [ft.Text("❌ 行情数值异常", color=ft.Colors.RED, size=12)]
             else:
-                blocks = parse_results(calculate_pivot_points(calc_high, calc_low, calc_close))
+                blocks = parse_results(calculate_pivot_points(calc_high, calc_low, calc_close, calc_open))
                 # 腾讯/无下一日数据时不标色（没意义）
                 if verify_mode in ("latest", "same_day", "unsupported"):
                     res = [build_all_in_one_table_card(blocks, page, None, None, None)]
@@ -821,7 +829,7 @@ def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "股票枢轴点 V1.5.1"
+    page.title = "股票枢轴点 V1.5.4"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
