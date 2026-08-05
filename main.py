@@ -1,5 +1,5 @@
 # ==============================================================================
-# 股票枢轴点计算器 StockPivotCalc V1.5.1
+# 股票枢轴点计算器 StockPivotCalc V1.5.6
 # ==============================================================================
 # 【功能说明】
 #   输入股票代码，选择日期与数据源，自动计算五种枢轴点。
@@ -30,6 +30,14 @@
 # 【依赖库】flet, pandas, requests, baostock
 # ==============================================================================
 # 【修改记录】
+# V1.5.6 2026-08-05  扩展特殊代码支持：au9999→hf(黄金)、n225→us(日经225)等；
+#                    增加hf/us/fx/bj前缀支持；内置常见全球指数/贵金属/外汇映射表。
+# V1.5.5 2026-08-05  支持带市场前缀输入（sh600519/sz000852/hk00700）；支持英文代码查询（如HSTECH）；
+#                    修复跨月/跨周查找：按周计算时扩展数据查询范围覆盖下一周；
+#                    优化代码市场识别逻辑，支持北交所(bj)和港股(hk)。
+# V1.5.4 2026-07-29  修复迪马克枢轴点算法：判断条件改为收盘价vs开盘价（Close<Open/Open>Close）；
+#                    所有数据源增加开盘价(open)返回；按周计算时open取本周首交易日开盘价；
+#                    版本号更新为V1.5.4。
 # V1.5.1 2026-07-13  数据源优化：腾讯历史替换为新浪K线接口；
 #                    复权说明补充ETF基金份额折算机制说明。
 # V1.1.1 2026-07-13  数据源优化：东财替换为腾讯历史接口；
@@ -51,6 +59,85 @@ import pandas as pd
 import requests
 from requests import get
 from requests.exceptions import RequestException, ConnectionError, Timeout
+
+
+# ==================== 代码解析工具 ====================
+
+# 常见特殊代码映射表（腾讯接口格式）
+_SPECIAL_CODE_MAP = {
+    # 贵金属/期货
+    "AU9999": ("AU9999", "hf"),      # 上海黄金
+    "AG9999": ("AG9999", "hf"),      # 上海白银
+    "CU9999": ("CU9999", "hf"),      # 沪铜
+    "AU": ("AU9999", "hf"),          # 黄金简写
+    # 全球指数
+    "N225": ("N225", "us"),          # 日经225
+    "NIKKEI": ("N225", "us"),        # 日经225
+    "DJI": ("DJIA", "us"),           # 道琼斯
+    "DOW": ("DJIA", "us"),           # 道琼斯
+    "IXIC": ("IXIC", "us"),          # 纳斯达克
+    "NASDAQ": ("IXIC", "us"),        # 纳斯达克
+    "SPX": ("SPX", "us"),            # 标普500
+    "SP500": ("SPX", "us"),          # 标普500
+    "HSI": ("HSI", "hk"),            # 恒生指数
+    "HSTECH": ("HSTECH", "hk"),      # 恒生科技
+    "HSAHP": ("HSAHP", "hk"),        # 恒生AH股
+    # 外汇/商品
+    "USDCNY": ("USDCNY", "fx"),      # 美元兑人民币
+    "USDJPY": ("USDJPY", "fx"),      # 美元兑日元
+    "XAU": ("XAU", "hf"),            # 国际黄金
+    "XAG": ("XAG", "hf"),            # 国际白银
+    "WTI": ("WTI", "hf"),            # 美原油
+    "BRENT": ("BRENT", "hf"),        # 布伦特原油
+}
+
+
+def _parse_stock_code(stock_code):
+    """
+    解析股票代码，支持格式：
+    - 纯数字：600519 → (600519, sh, False)
+    - 带前缀：sh600519 / sz000852 / usN225 / hfAU9999 → 直接解析
+    - 英文代码：HSTECH / AAPL → (HSTECH, hk, True)
+    - 特殊代码：au9999 → (AU9999, hf, False)  自动映射
+    - 港股数字：00700 → (00700, hk, False)
+    返回：(clean_code, market_prefix, is_english)
+    """
+    code = stock_code.strip().upper()
+    # 带前缀格式：sh600519, sz000852, hk00700, usN225, hfAU9999
+    if code.startswith(("SH.", "SZ.", "HK.", "US.", "HF.", "BJ.", "FX.",
+                        "SH", "SZ", "HK", "US", "HF", "BJ", "FX")) and len(code) > 2:
+        if code.startswith(("SH.", "SZ.", "HK.", "US.", "HF.", "BJ.", "FX.")):
+            prefix = code[:2].lower() if not code.startswith("FX.") else "fx"
+            clean = code[3:]
+        else:
+            prefix = code[:2].lower() if not code.startswith("FX") else "fx"
+            clean = code[2:]
+        return clean, prefix, False
+    # 先查特殊代码映射表（如 au9999 → hf.AU9999）
+    if code in _SPECIAL_CODE_MAP:
+        clean, prefix = _SPECIAL_CODE_MAP[code]
+        return clean, prefix, False
+    # 纯英文代码（不含数字）
+    if code.isalpha():
+        return code, "hk", True  # 英文代码默认港股
+    # 纯数字代码
+    if code.isdigit():
+        # 港股：5位数字（如00700、09988）
+        if len(code) == 5:
+            return code, "hk", False
+        # A股：6位数字
+        if code.startswith(("5", "6", "68", "69")):
+            return code, "sh", False
+        elif code.startswith(("0", "1", "3", "00", "30", "39")):
+            return code, "sz", False
+        elif code.startswith("8"):
+            return code, "bj", False  # 北交所
+        elif code.startswith("4"):
+            return code, "bj", False  # 北交所/新三板
+        else:
+            return code, "sz", False  # 默认深圳
+    # 混合代码（字母+数字）且不在映射表中，尝试作为英文代码
+    return code, "hk", True
 
 # Baostock 懒登录状态（首次使用时才登录，避免启动阻塞）
 _baostock_logged_in = False
@@ -103,20 +190,22 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
     import baostock as bs
     if not _ensure_baostock_login():
         return {"err": "login", "msg": "Baostock登录失败，请检查网络"}
-    code = stock_code.strip()
-    if code.startswith(("5", "6")):
-        bs_code = f"sh.{code}"
-    elif code.startswith(("0", "1", "3")):
-        bs_code = f"sz.{code}"
-    else:
-        return {"err": "code", "msg": "Baostock仅支持0/1/3/5/6开头A股代码"}
+    clean_code, prefix, is_eng = _parse_stock_code(stock_code)
+    if is_eng:
+        return {"err": "code", "msg": "Baostock暂不支持英文/港股代码，请切换至腾讯数据源"}
+    if prefix == "bj":
+        return {"err": "code", "msg": "Baostock暂不支持北交所代码，请切换至腾讯或新浪数据源"}
+    bs_code = f"{prefix}.{clean_code}"
+    code = clean_code
     target_str = target_date.strftime('%Y-%m-%d')
     # 按周计算时需要更多历史数据
     if weekly:
         start = (target_date - timedelta(days=20)).strftime('%Y-%m-%d')
+        # 跨月/跨周修复：按周计算需覆盖下一周数据
+        end = (target_date + timedelta(days=10)).strftime('%Y-%m-%d')
     else:
         start = (target_date - timedelta(days=10)).strftime('%Y-%m-%d')
-    end = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
+        end = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
     try:
         rs = bs.query_history_k_data_plus(
             bs_code, "date,open,high,low,close,volume",
@@ -160,7 +249,8 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
             verify_low = float(verify_df['low'].min())
             verify_close = float(verify_df.iloc[-1]['close'])
             verify_date = f"{verify_df.iloc[0]['date'].strftime('%m-%d')}~{verify_df.iloc[-1]['date'].strftime('%m-%d')}"
-            return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_date, target_str,
+            calc_open = float(week_df.iloc[0]['open'])  # 本周首交易日开盘价
+            return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                     verify_high, verify_low, verify_close, verify_date, verify_mode)
         mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
         if mask.any():
@@ -175,6 +265,7 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
         calc_high = float(calc_row['high'])
         calc_low = float(calc_row['low'])
         calc_close = float(calc_row['close'])
+        calc_open = float(calc_row['open'])
         # 验证数据：下一天
         calc_idx = df[df['date'].dt.date <= target_date].index[-1] if not df[df['date'].dt.date <= target_date].empty else -1
         if calc_idx >= 0 and calc_idx + 1 < len(df):
@@ -191,7 +282,7 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
             verify_close = float(verify_row['close'])
             verify_date = verify_row['date'].strftime('%Y-%m-%d')
             verify_mode = "latest"
-        return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_date, target_str,
+        return (_get_baostock_name(bs_code), calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                 verify_high, verify_low, verify_close, verify_date, verify_mode)
     except Exception as e:
         return {"err": "other", "msg": f"Baostock异常：{str(e)}"}
@@ -199,15 +290,14 @@ def _get_baostock_data(stock_code, target_date, weekly=False):
 
 def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
     """新浪财经K线接口，返回前复权日线数据"""
-    code = stock_code.strip()
-    if code.startswith(("5", "6")):
-        sina_code = f"sh{code}"
-        tencent_prefix = "sh"
-    elif code.startswith(("0", "1", "3")):
-        sina_code = f"sz{code}"
-        tencent_prefix = "sz"
-    else:
-        return {"err": "code", "msg": "新浪仅支持0/1/3/5/6开头A股代码"}
+    clean_code, prefix, is_eng = _parse_stock_code(stock_code)
+    if is_eng:
+        return {"err": "code", "msg": "新浪财经暂不支持英文/港股代码，请切换至腾讯数据源"}
+    if prefix == "bj":
+        return {"err": "code", "msg": "新浪财经暂不支持北交所代码，请切换至腾讯数据源"}
+    sina_code = f"{prefix}{clean_code}"
+    tencent_prefix = prefix
+    code = clean_code
 
     # 通过腾讯接口获取股票名称（新浪K线接口不返回名称）
     stock_name = code  # 默认用代码作为名称
@@ -229,7 +319,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
     target_str = target_date.strftime('%Y-%m-%d')
     # 新浪接口最多返回1023条数据，按周计算需要更多
     if weekly:
-        datalen = 300
+        datalen = 500  # 跨月/跨周修复：增加数据条数确保覆盖
     else:
         datalen = 150
 
@@ -309,7 +399,8 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                 verify_low = float(verify_df['low'].min())
                 verify_close = float(verify_df.iloc[-1]['close'])
                 verify_date = f"{verify_df.iloc[0]['date'].strftime('%m-%d')}~{verify_df.iloc[-1]['date'].strftime('%m-%d')}"
-                return (stock_name, calc_high, calc_low, calc_close, calc_date, target_str,
+                calc_open = float(week_df.iloc[0]['open'])  # 本周首交易日开盘价
+                return (stock_name, calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                         verify_high, verify_low, verify_close, verify_date, verify_mode)
 
             date_mask = df['date'].dt.strftime('%Y-%m-%d') == target_str
@@ -327,6 +418,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
             calc_high = float(calc_row["high"])
             calc_low = float(calc_row["low"])
             calc_close = float(calc_row["close"])
+            calc_open = float(calc_row["open"])
             # 验证数据：下一天
             calc_idx = df[df["date"].dt.date <= target_date].index[-1] if not df[df["date"].dt.date <= target_date].empty else -1
             if calc_idx >= 0 and calc_idx + 1 < len(df):
@@ -343,7 +435,7 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
                 verify_close = float(verify_row['close'])
                 verify_date = verify_row['date'].strftime('%Y-%m-%d')
                 verify_mode = "latest"
-            return (stock_name, calc_high, calc_low, calc_close, calc_date, target_str,
+            return (stock_name, calc_high, calc_low, calc_close, calc_open, calc_date, target_str,
                     verify_high, verify_low, verify_close, verify_date, verify_mode)
         except Exception as e:
             if attempt < retry:
@@ -354,16 +446,20 @@ def _get_sina_kline_data(stock_code, target_date, weekly=False, retry=2):
 
 
 def _get_tencent_data(stock_code, target_date, retry):
-    """腾讯实时接口：仅返回当天数据，验证数据与计算数据相同"""
+    """腾讯实时接口：支持A股/港股/美股，验证数据与计算数据相同"""
     from datetime import date as dt_date
     date_show = target_date.strftime('%Y-%m-%d')
     today = dt_date.today()
-    if stock_code.startswith(("5", "6")):
-        prefix = "sh"
-    elif stock_code.startswith(("0", "1", "3")):
-        prefix = "sz"
+    clean_code, prefix, is_eng = _parse_stock_code(stock_code)
+    original_code = stock_code.strip()  # 保留原始输入用于错误提示
+    # 腾讯接口市场前缀映射
+    tencent_prefix_map = {"sh": "sh", "sz": "sz", "hk": "hk", "bj": "bj", "us": "us"}
+    tencent_prefix = tencent_prefix_map.get(prefix, prefix)
+    # 港股/美股英文代码直接拼接
+    if is_eng or prefix == "hk":
+        query_code = f"{tencent_prefix}{clean_code}"
     else:
-        return {"err": "code", "msg": "腾讯仅支持0/1/3/5/6开头A股代码"}
+        query_code = f"{tencent_prefix}{clean_code}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Connection': 'close', 'Accept-Language': 'zh-CN,zh;q=0.9',
@@ -371,19 +467,23 @@ def _get_tencent_data(stock_code, target_date, retry):
     }
     for attempt in range(retry + 1):
         try:
-            url = f"https://qt.gtimg.cn/q={prefix}{stock_code}"
+            url = f"https://qt.gtimg.cn/q={query_code}"
             resp = get(url, headers=headers, timeout=10)
             text = resp.text
             if '~' not in text:
                 if attempt < retry:
                     time.sleep(0.8)
                     continue
-                return {"err": "parse", "msg": "腾讯接口格式异常"}
+                # 区分不支持的品种和真正的格式异常
+                if prefix in ("us", "hf", "fx"):
+                    return {"err": "parse", "msg": f"腾讯接口暂不支持该品种({original_code})，请尝试A股/港股代码"}
+                return {"err": "parse", "msg": "腾讯接口格式异常，代码可能不存在"}
             parts = text.split('~')
             name = parts[1]
             high = float(parts[33])
             low = float(parts[34])
             close = float(parts[3])
+            open_price = float(parts[5])  # 开盘价
             # 腾讯只有当天数据，计算和验证用同一组数据
             if target_date == today:
                 verify_mode = "same_day"
@@ -391,7 +491,7 @@ def _get_tencent_data(stock_code, target_date, retry):
             else:
                 verify_mode = "unsupported"
                 verify_date = "腾讯仅当天"
-            return (name, high, low, close, date_show, date_show,
+            return (name, high, low, close, open_price, date_show, date_show,
                     high, low, close, verify_date, verify_mode)
         except (RequestException, ConnectionError, Timeout):
             if attempt < retry:
@@ -405,12 +505,15 @@ def _get_tencent_data(stock_code, target_date, retry):
 
 def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False):
     target_date = target_date.date() if isinstance(target_date, datetime) else target_date
+    # 统一代码解析
+    clean_code, prefix, is_eng = _parse_stock_code(stock_code)
     if source == "Baostock":
         return _get_baostock_data(stock_code, target_date, weekly=weekly)
     elif source == "新浪财经":
         return _get_sina_kline_data(stock_code, target_date, weekly=weekly)
     elif source == "腾讯实时":
-        if weekly:
+        if weekly and not is_eng:
+            # A股英文代码暂不支持按周（港股指数通常不需要）
             return {"err": "weekly", "msg": "腾讯仅支持实时行情，无法按周计算，请切换至Bao或新浪"}
         return _get_tencent_data(stock_code, target_date, retry)
     else:
@@ -419,7 +522,7 @@ def get_stock_data(stock_code, target_date, source="Bao", retry=2, weekly=False)
 
 # ==================== 枢轴点计算 ====================
 
-def calculate_pivot_points(high, low, close):
+def calculate_pivot_points(high, low, close, open_price=None):
     results = []
     pp = (high + low + close) / 3
     s1 = (2 * pp) - high
@@ -461,10 +564,14 @@ def calculate_pivot_points(high, low, close):
     results.append("伍迪枢轴点-PP: {:.3f}".format(pp))
     results.append("R1: {:.3f}, R2: {:.3f}".format(r1, r2))
     results.append("S1: {:.3f}, S2: {:.3f}".format(s1, s2))
-    if close < low:
-        x = high + 2 * low + close
-    elif close > high:
-        x = 2 * high + low + close
+    # 迪马克枢轴点：判断依据为收盘价 vs 开盘价（非高低点）
+    if open_price is not None:
+        if close < open_price:
+            x = high + 2 * low + close
+        elif close > open_price:
+            x = 2 * high + low + close
+        else:
+            x = high + low + 2 * close
     else:
         x = high + low + 2 * close
     pp = x / 4
@@ -537,20 +644,17 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                         pass
         if all_r:
             all_r.sort(key=lambda x: x[0])
+            best_err = all_r[0][0]  # 统一赋值，避免次优逻辑引用未定义变量
             # 最优：所有与第1名误差相同的值（误差差<0.001视为相同）
-            if all_r[0][0] <= 0.01:
-                best_err = all_r[0][0]
-                if best_err <= 0.01:
-                    for pct, dk, lv, fv in all_r:
-                        if abs(pct - best_err) < 0.001:
-                            best_r_global["red"].add((dk, lv))
-                        else:
-                            break
-            # 次优：所有与第2名误差相同的值（在次优组中找并列）
-            if len(all_r) > 1:
-                # 找到第一个不属于最优组的条目
+            if best_err <= 0.02:
+                for pct, dk, lv, fv in all_r:
+                    if abs(pct - best_err) < 0.001:
+                        best_r_global["red"].add((dk, lv))
+                    else:
+                        break
+            # 次优：仅当最优误差≤2%时，次优误差≤2%标橙色
+            if best_err <= 0.02 and len(all_r) > 1:
                 second_start = 0
-                best_err = all_r[0][0]
                 for i, (pct, dk, lv, fv) in enumerate(all_r):
                     if abs(pct - best_err) >= 0.001:
                         second_start = i
@@ -580,19 +684,17 @@ def build_all_in_one_table_card(blocks, page, verify_high=None, verify_low=None,
                         pass
         if all_s:
             all_s.sort(key=lambda x: x[0])
-            # 最优：所有与第1名误差相同的值
-            if all_s[0][0] <= 0.01:
-                best_err = all_s[0][0]
-                if best_err <= 0.01:
-                    for pct, dk, lv, fv in all_s:
-                        if abs(pct - best_err) < 0.001:
-                            best_s_global["green"].add((dk, lv))
-                        else:
-                            break
-            # 次优
-            if len(all_s) > 1:
+            best_err = all_s[0][0]
+            # 最优组：误差≤2%标绿色
+            if best_err <= 0.02:
+                for pct, dk, lv, fv in all_s:
+                    if abs(pct - best_err) < 0.001:
+                        best_s_global["green"].add((dk, lv))
+                    else:
+                        break
+            # 次优组：仅当最优误差≤2%时，次优误差≤2%标黄色
+            if best_err <= 0.02 and len(all_s) > 1:
                 second_start = 0
-                best_err = all_s[0][0]
                 for i, (pct, dk, lv, fv) in enumerate(all_s):
                     if abs(pct - best_err) >= 0.001:
                         second_start = i
@@ -737,7 +839,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
                 source_note_text.value = ""
         else:
             # 新返回格式：(name, calc_h, calc_l, calc_c, calc_date, target_str, verify_h, verify_l, verify_c, verify_date, verify_mode)
-            stock_name, calc_high, calc_low, calc_close, calc_date, target_str, verify_high, verify_low, verify_close, verify_date, verify_mode = data
+            stock_name, calc_high, calc_low, calc_close, calc_open, calc_date, target_str, verify_high, verify_low, verify_close, verify_date, verify_mode = data
             auto_name.value = f"名称：{stock_name}"
             _set_name_size(auto_name, stock_name)
             auto_high.value = f"{verify_high:.3f}"
@@ -770,7 +872,7 @@ async def refresh_calc_data_async(e, page, auto_code, auto_mode, date_store, aut
             if calc_high <= 0 or calc_low <= 0 or calc_close <= 0 or calc_high < calc_low or calc_close > calc_high or calc_close < calc_low:
                 res = [ft.Text("❌ 行情数值异常", color=ft.Colors.RED, size=12)]
             else:
-                blocks = parse_results(calculate_pivot_points(calc_high, calc_low, calc_close))
+                blocks = parse_results(calculate_pivot_points(calc_high, calc_low, calc_close, calc_open))
                 # 腾讯/无下一日数据时不标色（没意义）
                 if verify_mode in ("latest", "same_day", "unsupported"):
                     res = [build_all_in_one_table_card(blocks, page, None, None, None)]
@@ -821,7 +923,7 @@ def _update_source_btns(xl_btn, bs_btn, tx_btn, source_state, new_source, page):
 # ==================== 主界面 ====================
 
 def main(page: ft.Page):
-    page.title = "股票枢轴点 V1.5.1"
+    page.title = "股票枢轴点 V1.5.6"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE)
     page.padding = 0
